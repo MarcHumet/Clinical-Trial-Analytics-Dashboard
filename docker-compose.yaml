@@ -15,5 +15,23 @@ services:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
 
+  streamlit:
+    build: .
+    container_name: streamlit-dashboard
+    command: streamlit run src/app.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: user
+      DB_PASSWORD: pass
+      DB_NAME: clinicaltrials
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
 volumes:
   mysql_data:
