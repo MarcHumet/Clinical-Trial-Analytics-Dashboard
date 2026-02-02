@@ -1,0 +1,22 @@
+[project]
+name = "clinical-trial-analytics-dashboard"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "faker>=15.0.0",
+    "ipykernel>=7.1.0",
+    "ipython>=8.38.0",
+    "jupyterlab>=4.5.3",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.8",
+    "notebook>=7.5.3",
+    "pandas>=2.3.3",
+    "pydantic>=2.0.0",
+    "python-dotenv>=0.19.0",
+    "requests>=2.0.0",
+    "scipy>=1.15.3",
+    "seaborn>=0.13.2",
+    "sqlalchemy>=2.0.0",
+]
