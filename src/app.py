@@ -13,6 +13,8 @@ import json
 import sys
 from pathlib import Path
 import plotly.express as px
+import seaborn as sns
+from matplotlib import pyplot as plt
 from loguru import logger
 
 # Ensure project root is on sys.path for ddbb imports
@@ -99,7 +101,7 @@ def get_db_connection_with_retry(retries=3, delay=1):
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Analysis", "Search Studies"])
+page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Distribution Analysis", "Search Studies"])
 
 if page == "Home":
     st.subheader("Welcome to the Clinical Trial Analytics Dashboard")
@@ -347,8 +349,8 @@ elif page == "Data Overview & Completeness":
         finally:
             conn.close()
 
-elif page == "Analysis":
-    st.subheader("📊 Statistical Analysis & Visualizations")
+elif page == "Distribution Analysis":
+    st.subheader("📊 Data Distribution Analysis")
     
     conn = get_db_connection_with_retry(retries=3, delay=0.5)
     if not conn:
@@ -372,70 +374,63 @@ elif page == "Analysis":
         try:
             cursor = conn.cursor(dictionary=True)
             
-            # Get table stats
+            # Get table summary statistics
             cursor.execute(f"SELECT COUNT(*) as count FROM {selected_table}")
             row_count = cursor.fetchone()['count']
             
             st.metric(f"Total rows in {selected_table_name}", row_count)
             
-            # Display raw data
-            st.subheader(f"Data from {selected_table_name}")
-            cursor.execute(f"SELECT * FROM {selected_table} LIMIT 100")
-            df = pd.DataFrame(cursor.fetchall())
-            st.dataframe(df, use_container_width=True)
-            
-            # Data Availability Report
-            st.subheader(f"📊 Data Availability Report - {selected_table_name}")
+            # Table Summary Statistics
+            st.subheader(f"📊 Table Summary - {selected_table_name}")
             
             # Get column information
             cursor.execute(f"DESCRIBE {selected_table}")
             columns_info = cursor.fetchall()
             column_names = [col['Field'] if isinstance(col, dict) else col[0] for col in columns_info]
             
-            # Calculate data availability for each column
-            availability_data = []
-            for col in column_names:
-                try:
-                    cursor.execute(f"SELECT COUNT(*) as total, SUM(CASE WHEN `{col}` IS NULL THEN 1 ELSE 0 END) as null_count FROM {selected_table}")
-                    result = cursor.fetchone()
-                    total = result['total'] if isinstance(result, dict) else result[0]
-                    null_count = result['null_count'] if isinstance(result, dict) else result[1]
-                    null_count = null_count if null_count is not None else 0
-                    non_null = total - null_count
-                    percentage = (non_null / total * 100) if total > 0 else 0
-                    
-                    availability_data.append({
-                        "Column": col,
-                        "Total Records": total,
-                        "Non-NULL": non_null,
-                        "NULL": null_count,
-                        "Data Availability %": f"{percentage:.1f}%"
-                    })
-                except Exception as e:
-                    st.warning(f"Could not analyze column {col}: {e}")
+            # Define key columns for each table to show top 5 values
+            key_columns_map = {
+                "studies": ["status", "phase", "study_type", "gender"],
+                "conditions": ["condition_name"],
+                "interventions": ["intervention_type", "name"],
+                "outcomes": ["outcome_type"],
+                "sponsors": ["agency", "agency_class"],
+                "locations": ["country", "city"],
+                "study_design": ["allocation", "intervention_model", "masking", "primary_purpose"]
+            }
             
-            if availability_data:
-                availability_df = pd.DataFrame(availability_data)
-                # Apply conditional coloring to the Data Availability % column
-                styled_df = availability_df.style.applymap(lambda val: highlight_availability(val) if isinstance(val, str) and '%' in val else '', subset=['Data Availability %'])
-                st.write(styled_df)
-                
-                # Summary stats
-                col_summary1, col_summary2, col_summary3 = st.columns(3)
-                avg_availability = sum([float(x["Data Availability %"].rstrip("%")) for x in availability_data]) / len(availability_data)
-                
-                with col_summary1:
-                    st.metric("Total Columns", len(column_names))
-                with col_summary2:
-                    st.metric("Average Data Availability", f"{avg_availability:.1f}%")
-                with col_summary3:
+            key_columns = key_columns_map.get(selected_table, [])
+            
+            # Create summary table
+            summary_data = []
+            for col in key_columns:
+                if col in column_names:
                     try:
-                        cursor.execute(f"SELECT COUNT(*) as complete_count FROM {selected_table} WHERE " + " AND ".join([f"`{c}` IS NOT NULL" for c in column_names]))
-                        complete_result = cursor.fetchone()
-                        complete_records = complete_result['complete_count'] if isinstance(complete_result, dict) else complete_result[0]
-                        st.metric("Complete Records", complete_records)
-                    except:
-                        st.metric("Complete Records", "N/A")
+                        # Get total and distinct counts
+                        cursor.execute(f"SELECT COUNT(*) as total, COUNT(DISTINCT `{col}`) as distinct_count FROM {selected_table} WHERE `{col}` IS NOT NULL")
+                        counts = cursor.fetchone()
+                        total_records = counts['total'] if isinstance(counts, dict) else counts[0]
+                        distinct_records = counts['distinct_count'] if isinstance(counts, dict) else counts[1]
+                        
+                        # Get top 5 most frequent values
+                        cursor.execute(f"SELECT `{col}`, COUNT(*) as count FROM {selected_table} WHERE `{col}` IS NOT NULL GROUP BY `{col}` ORDER BY count DESC LIMIT 5")
+                        top_values = cursor.fetchall()
+                        top_5_str = ", ".join([f"{row[col] if isinstance(row, dict) else row[0]} ({row['count'] if isinstance(row, dict) else row[1]})" for row in top_values])
+                        
+                        summary_data.append({
+                            "Column": col,
+                            "Total Records": total_records,
+                            "Distinct Values": distinct_records,
+                            "Top 5 Most Frequent": top_5_str
+                        })
+                    except Exception as e:
+                        st.warning(f"Could not analyze column {col}: {e}")
+            
+            if summary_data:
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True)
+            else:
+                st.info("No key columns found for summary analysis.")
             
             # Visualizations based on selected table
             st.subheader(f"Visualizations - {selected_table_name}")
@@ -452,31 +447,7 @@ elif page == "Analysis":
                         fig.update_xaxes(tickangle=-45)
                         st.plotly_chart(fig, use_container_width=True)
                 
-                with col2:
-                    # Status distribution - Seaborn Pie with Matplotlib
-                    cursor.execute("SELECT status, COUNT(*) as count FROM studies WHERE status IS NOT NULL GROUP BY status ORDER BY count DESC")
-                    status_data = pd.DataFrame(cursor.fetchall())
-                    if not status_data.empty and len(status_data) <= 10:
-                        setup_dark_theme()
-                        fig, ax = plt.subplots(figsize=(8, 6))
-                        fig.patch.set_facecolor('#000000')
-                        ax.set_facecolor('#000000')
-                        colors = sns.color_palette("husl", len(status_data))
-                        wedges, texts, autotexts = ax.pie(status_data['count'], labels=status_data['status'], autopct='%1.1f%%', colors=colors, startangle=90)
-                        ax.set_title("Study Status Distribution (Pie Chart)", color='white', fontsize=14, fontweight='bold')
-                        # Make pie text white
-                        for text in texts:
-                            text.set_color('white')
-                            text.set_fontsize(10)
-                        for autotext in autotexts:
-                            autotext.set_color('white')
-                            autotext.set_fontsize(9)
-                            autotext.set_fontweight('bold')
-                        st.pyplot(fig)
-                
-                col3, col4 = st.columns(2)
-                
-                with col3:
+                with col2:                    
                     # Phase distribution - Plotly
                     cursor.execute("SELECT phase, COUNT(*) as count FROM studies WHERE phase IS NOT NULL GROUP BY phase ORDER BY count DESC")
                     phase_data = pd.DataFrame(cursor.fetchall())
@@ -485,23 +456,21 @@ elif page == "Analysis":
                         fig.update_xaxes(tickangle=-45)
                         st.plotly_chart(fig, use_container_width=True)
                 
+                col3, col4 = st.columns(2)
+                
+                with col3:
+                     
+                    # Gender distribution chart
+                    # Gender distribution - Plotly pie chart
+                    cursor.execute("SELECT gender, COUNT(*) as count FROM studies WHERE gender IS NOT NULL GROUP BY gender ORDER BY count DESC")
+                    gender_data = pd.DataFrame(cursor.fetchall())
+                    if not gender_data.empty:
+                        fig = px.pie(gender_data, values='count', names='gender', title="Gender Distribution")
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                
                 with col4:
-                    # Study type - Seaborn horizontal bar
-                    cursor.execute("SELECT study_type, COUNT(*) as count FROM studies WHERE study_type IS NOT NULL GROUP BY study_type ORDER BY count DESC")
-                    type_data = pd.DataFrame(cursor.fetchall())
-                    if not type_data.empty:
-                        setup_dark_theme()
-                        fig, ax = plt.subplots(figsize=(8, 5))
-                        fig.patch.set_facecolor('#000000')
-                        ax.set_facecolor('#000000')
-                        sns.barplot(data=type_data, y='study_type', x='count', palette="viridis", ax=ax)
-                        ax.set_title("Study Type Distribution (Horizontal Bar)", color='white', fontsize=12, fontweight='bold')
-                        ax.set_xlabel("Count", color='white')
-                        ax.set_ylabel("Study Type", color='white')
-                        ax.tick_params(colors='white')
-                        for spine in ax.spines.values():
-                            spine.set_color('white')
-                        st.pyplot(fig)
+                    pass   
                 
                 # Enrollment statistics with distribution plot
                 cursor.execute("SELECT enrollment FROM studies WHERE enrollment IS NOT NULL")
@@ -509,11 +478,19 @@ elif page == "Analysis":
                 if not enrollment_data.empty:
                     col5, col6 = st.columns(2)
                     with col5:
-                        cursor.execute("SELECT AVG(enrollment) as avg_enrollment, MIN(enrollment) as min, MAX(enrollment) as max FROM studies WHERE enrollment IS NOT NULL")
+                        cursor.execute("SELECT AVG(enrollment) as avg_enrollment, MIN(enrollment) as min, MAX(enrollment) as max, COUNT(*) as total_studies FROM studies WHERE enrollment IS NOT NULL")
                         enrollment_stats = cursor.fetchone()
+                        # Get count of studies with 0 enrollment
+                        cursor.execute("SELECT COUNT(*) as zero_enrollment FROM studies WHERE enrollment = 0")
+                        zero_enrollment_result = cursor.fetchone()
+                        zero_enrollment = zero_enrollment_result['zero_enrollment'] if isinstance(zero_enrollment_result, dict) else zero_enrollment_result[0]
+                        
                         if enrollment_stats:
                             st.metric("Average Enrollment", f"{enrollment_stats['avg_enrollment']:.0f}")
-                            st.caption(f"Range: {enrollment_stats['min']} - {enrollment_stats['max']}")
+                            st.metric("Minimum Enrollment", f"{enrollment_stats['min']}")
+                            st.metric("Maximum Enrollment", f"{enrollment_stats['max']}")
+                            st.metric("Studies with 0 Enrollment", f"{zero_enrollment}")
+                            st.caption(f"Total studies with enrollment data: {enrollment_stats['total_studies']}")
                     
                     with col6:
                         # Seaborn histogram with KDE
@@ -522,13 +499,15 @@ elif page == "Analysis":
                         fig.patch.set_facecolor('#000000')
                         ax.set_facecolor('#000000')
                         sns.histplot(data=enrollment_data, x='enrollment', kde=True, bins=30, ax=ax, color="skyblue")
-                        ax.set_title("Enrollment Distribution", color='white', fontsize=12, fontweight='bold')
+                        ax.set_xlim(0, 10000)  # Set scale from 0 to 10,000
+                        ax.set_title("Enrollment Distribution (0-10,000 scale)", color='white', fontsize=12, fontweight='bold')
                         ax.set_xlabel("Enrollment Count", color='white')
                         ax.set_ylabel("Frequency", color='white')
                         ax.tick_params(colors='white')
                         for spine in ax.spines.values():
                             spine.set_color('white')
                         st.pyplot(fig)
+               
             
             elif selected_table == "conditions":
                 # Top conditions - Horizontal bar with dark theme

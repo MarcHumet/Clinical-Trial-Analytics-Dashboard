@@ -15,7 +15,7 @@ import json
 
 # load .env (if present)
 load_dotenv()
-page_size_limit=int(os.getenv('page_size_limit') or  10)
+page_size_limit=int(os.getenv('page_size_limit') or  100)
 # Configuration from environment (.env)
 API_URL = os.getenv('API_URL', 'https://clinicaltrials.gov/api/v2/studies')
 
@@ -1111,7 +1111,7 @@ def main():
     # Always fetch from the ClinicalTrials.gov API and populate the DB.
     # We cap the number of pages to 100 to avoid long-running downloads.
     json_file = "studies_api.json"
-    max_pages = 10  # Limit to 10 pages for quicker testing; adjust as needed.
+    max_pages = 100  # Limit to 10 pages for quicker testing; adjust as needed.
     logger.info(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
     logger.info("Note: Downloading data from the API can take up to ~3 minutes depending on network and page limits.")
     fetch_studies_from_api(json_file, page_size=100, max_pages=max_pages)
