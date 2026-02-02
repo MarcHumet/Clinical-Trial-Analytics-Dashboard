@@ -734,6 +734,32 @@ def extract_conditions(study_json: dict) -> List[dict]:
         return []
 
 
+def get_mesh_term(condition_name: str) -> Optional[str]:
+    """Fetch MeSH descriptor ID for a condition name."""
+    if not condition_name:
+        return None
+
+    url = "https://id.nlm.nih.gov/mesh/lookup/descriptor"
+    params = {
+        "label": condition_name,
+        "match": "contains",
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        results = resp.json() or []
+        if not results:
+            return None
+        resource = results[0].get("resource")
+        if not resource:
+            return None
+        return resource.rsplit("/", 1)[-1]
+    except Exception as e:
+        logger.error(f"error:{e}")
+        return None
+
+
 def extract_interventions(study_json: dict) -> List[dict]:
     """Extract interventions from JSON"""
     try:
