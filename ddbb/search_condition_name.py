@@ -62,6 +62,7 @@ def get_mesh_term(condition_name: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"error:{e}")
         return None
+
 dict_cond_name_to_mesh_term = {}
 for condition in tqdm(conditions, desc="Fetching MeSH terms"):
     mesh_term = get_mesh_term(condition)

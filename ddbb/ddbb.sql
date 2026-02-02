@@ -112,7 +112,6 @@ CREATE TABLE study_design (
 	masking VARCHAR(100), 
 	primary_purpose VARCHAR(50), 
 	observational_model VARCHAR(50), 
-	time_perspective VARCHAR(50), 
 	PRIMARY KEY (design_id), 
 	FOREIGN KEY(study_id) REFERENCES studies (study_id)
 );

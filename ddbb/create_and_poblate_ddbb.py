@@ -129,8 +129,7 @@ class StudyDesignSchema(BaseModel):
     masking: Optional[str] = Field(None, max_length=100)
     primary_purpose: Optional[str] = Field(None, max_length=50)
     observational_model: Optional[str] = Field(None, max_length=50)
-    time_perspective: Optional[str] = Field(None, max_length=50)
-
+    
 
 # ============================================================================
 # SQLAlchemy Models
@@ -258,7 +257,6 @@ class StudyDesign(Base):
     masking = Column(String(100))
     primary_purpose = Column(String(50))
     observational_model = Column(String(50))
-    time_perspective = Column(String(50))
     
     study = relationship("Study", back_populates="study_design")
 
@@ -574,8 +572,8 @@ def generate_study_design(session, studies):
                 masking=random.choice(maskings),
                 primary_purpose=random.choice(purposes),
                 observational_model=random.choice(observational_models),
-                time_perspective=random.choice(perspectives)
-            )
+               
+               )
             
             design = StudyDesign(**design_data.model_dump())
             designs.append(design)
@@ -917,7 +915,6 @@ def extract_study_design(study_json: dict) -> dict:
             'masking': design_info.get('maskingInfo', {}).get('masking'),
             'primary_purpose': design_info.get('primaryPurpose'),
             'observational_model': design_info.get('observationalModel'),
-            'time_perspective': design_info.get('timeframeOfObservation'),
         }
     except:
         return {}

@@ -50,7 +50,12 @@ criteria of colors of text in availability's table:
 | Column     | Table      | Methodology |
 |------------|------------|-------------|
 | continent | Locations | Derive from existing `country` column using Python packages `pycountry` (country lookup/matching) and `pycountry-convert` (country code → continent conversion): fuzzy match country name to alpha-2 code, map to continent code, convert to name (e.g., "United States" → "US" → "NA" → "North America"). [file:1] |
-| mesh_term | conditions | Populate missing `mesh_term` via Medical Subject Headings (MeSH) API: extract keywords from `condition_name`, query NLM MeSH API (`https://meshb.nlm.nih.gov/api/search`), match closest MeSH descriptor and retrieve term. Handle fuzzy matching for variants; batch requests for efficiency. [file:1] |
+| mesh_term | conditions | Populate missing `mesh_term` via Medical Subject Headings (MeSH) API: extract keywords from `condition_name`, query NLM MeSH API (`https://id.nlm.nih.gov/mesh/lookup/descriptor`), match closest MeSH descriptor and retrieve term. Handle fuzzy matching for variants; batch requests for efficiency. [file:1] |
 
 
+6. Highlight document inconsistences: 
 
+| Entity Relationship Diagram      | Table Definitions (.sql)      | resolution adopted |
+|------------|------------|-------------|
+| no "time_perspective"  | time_perspective VARCHAR(50)   | As it is not found in the downloaded json I delete this column |
+| "type" column in  interventions table  | "intervention_type" column in  interventions table   |set "intervention_type" column in  interventions table   |
