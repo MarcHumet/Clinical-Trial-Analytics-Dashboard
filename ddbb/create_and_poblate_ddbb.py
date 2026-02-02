@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, Text, Date, DateTime, ForeignKey, Index
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from pydantic import BaseModel, Field, field_validator, ConfigDict
+from loguru import logger
 import requests
 import time
 import os
@@ -14,7 +15,7 @@ import json
 
 # load .env (if present)
 load_dotenv()
-
+page_size_limit=int(os.getenv('page_size_limit') or  10)
 # Configuration from environment (.env)
 API_URL = os.getenv('API_URL', 'https://clinicaltrials.gov/api/v2/studies')
 
@@ -115,7 +116,7 @@ class LocationSchema(BaseModel):
     city: Optional[str] = Field(None, max_length=100)
     state: Optional[str] = Field(None, max_length=100)
     country: Optional[str] = Field(None, max_length=100)
-    continent: Optional[str] = Field(None, max_length=50)
+    continent: Optional[str] = Field(None, max_length=100)
 
 
 class StudyDesignSchema(BaseModel):
@@ -238,7 +239,7 @@ class Location(Base):
     city = Column(String(100))
     state = Column(String(100))
     country = Column(String(100))
-    continent = Column(String(50))
+    continent = Column(String(100))
     
     study = relationship("Study", back_populates="locations")
     
@@ -316,7 +317,7 @@ def create_engine_and_session():
         Session = sessionmaker(bind=engine)
         return engine, Session
     except Exception as e:
-        print(f"Error creating engine: {e}")
+        logger.info(f"Error creating engine: {e}")
         return None, None
 
 
@@ -325,13 +326,13 @@ def create_schema(engine):
     try:
         # Drop all existing tables first to ensure clean schema
         Base.metadata.drop_all(engine)
-        print("✓ Dropped existing schema")
+        logger.info("✓ Dropped existing schema")
         
         # Create all tables fresh
         Base.metadata.create_all(engine)
-        print("✓ Schema created successfully")
+        logger.info("✓ Schema created successfully")
     except Exception as e:
-        print(f"Error creating schema: {e}")
+        logger.info(f"Error creating schema: {e}")
 
 
 def generate_studies(session, num_studies: int = 50):
@@ -379,13 +380,13 @@ def generate_studies(session, num_studies: int = 50):
             validation_errors.append(f"Study {i}: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Validation errors: {len(validation_errors)}")
         for error in validation_errors[:5]:  # Show first 5 errors
-            print(f"  - {error}")
+            logger.info(f"  - {error}")
     
     session.add_all(studies)
     session.commit()
-    print(f"✓ Generated {len(studies)} studies")
+    logger.info(f"✓ Generated {len(studies)} studies")
     return studies
 
 
@@ -416,11 +417,11 @@ def generate_conditions(session, studies):
                 validation_errors.append(f"Condition: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Condition validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Condition validation errors: {len(validation_errors)}")
     
     session.add_all(conditions)
     session.commit()
-    print(f"✓ Generated {len(conditions)} conditions")
+    logger.info(f"✓ Generated {len(conditions)} conditions")
 
 
 def generate_interventions(session, studies):
@@ -447,11 +448,11 @@ def generate_interventions(session, studies):
                 validation_errors.append(f"Intervention: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Intervention validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Intervention validation errors: {len(validation_errors)}")
     
     session.add_all(interventions)
     session.commit()
-    print(f"✓ Generated {len(interventions)} interventions")
+    logger.info(f"✓ Generated {len(interventions)} interventions")
 
 
 def generate_outcomes(session, studies):
@@ -479,11 +480,11 @@ def generate_outcomes(session, studies):
                 validation_errors.append(f"Outcome: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Outcome validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Outcome validation errors: {len(validation_errors)}")
     
     session.add_all(outcomes)
     session.commit()
-    print(f"✓ Generated {len(outcomes)} outcomes")
+    logger.info(f"✓ Generated {len(outcomes)} outcomes")
 
 
 def generate_sponsors(session, studies):
@@ -511,29 +512,17 @@ def generate_sponsors(session, studies):
                 validation_errors.append(f"Sponsor: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Sponsor validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Sponsor validation errors: {len(validation_errors)}")
     
     session.add_all(sponsors)
     session.commit()
-    print(f"✓ Generated {len(sponsors)} sponsors")
+    logger.info(f"✓ Generated {len(sponsors)} sponsors")
 
 
 def generate_locations(session, studies):
     """Generate and insert sample locations"""
     countries = ["United States", "Canada", "United Kingdom", "France", "Germany", 
                  "Australia", "Japan", "India", "Brazil", "Mexico"]
-    continents = {
-        "United States": "North America",
-        "Canada": "North America",
-        "United Kingdom": "Europe",
-        "France": "Europe",
-        "Germany": "Europe",
-        "Australia": "Oceania",
-        "Japan": "Asia",
-        "India": "Asia",
-        "Brazil": "South America",
-        "Mexico": "North America"
-    }
     
     locations = []
     validation_errors = []
@@ -548,8 +537,7 @@ def generate_locations(session, studies):
                     facility=fake.company(),
                     city=fake.city(),
                     state=fake.state(),
-                    country=country,
-                    continent=continents.get(country, "Unknown")
+                    country=country
                 )
                 
                 location = Location(**location_data.model_dump())
@@ -558,11 +546,11 @@ def generate_locations(session, studies):
                 validation_errors.append(f"Location: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ Location validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ Location validation errors: {len(validation_errors)}")
     
     session.add_all(locations)
     session.commit()
-    print(f"✓ Generated {len(locations)} locations")
+    logger.info(f"✓ Generated {len(locations)} locations")
 
 
 def generate_study_design(session, studies):
@@ -595,11 +583,11 @@ def generate_study_design(session, studies):
             validation_errors.append(f"StudyDesign: {str(e)}")
     
     if validation_errors:
-        print(f"⚠ StudyDesign validation errors: {len(validation_errors)}")
+        logger.info(f"⚠ StudyDesign validation errors: {len(validation_errors)}")
     
     session.add_all(designs)
     session.commit()
-    print(f"✓ Generated {len(designs)} study designs")
+    logger.info(f"✓ Generated {len(designs)} study designs")
 
 
 def populate_database(num_studies: int = 50):
@@ -607,16 +595,16 @@ def populate_database(num_studies: int = 50):
     engine, Session = create_engine_and_session()
     
     if not engine or not Session:
-        print("Failed to create database engine")
+        logger.info("Failed to create database engine")
         return
     
     session = Session()
     
     try:
-        print("Creating database schema...")
+        logger.info("Creating database schema...")
         create_schema(engine)
         
-        print(f"Generating and populating {num_studies} studies...")
+        logger.info(f"Generating and populating {num_studies} studies...")
         studies = generate_studies(session, num_studies)
         
         generate_conditions(session, studies)
@@ -626,10 +614,10 @@ def populate_database(num_studies: int = 50):
         generate_locations(session, studies)
         generate_study_design(session, studies)
         
-        print("\n✓ Database population completed successfully!")
+        logger.success("\n✓ Database population completed successfully!")
         
     except Exception as e:
-        print(f"Error during database population: {e}")
+        logger.info(f"Error during database population: {e}")
         session.rollback()
     finally:
         session.close()
@@ -642,11 +630,11 @@ def load_studies_from_json(json_file: str):
             data = json.load(f)
         return data.get('studies', [])
     except Exception as e:
-        print(f"Error loading JSON: {e}")
+        logger.info(f"Error loading JSON: {e}")
         return []
 
 
-def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: int | None = 100, delay: float = 0.2):
+def fetch_studies_from_api(output_file: str, page_size: int = page_size_limit, max_pages: int | None = 10, delay: float = 0.2):
     """Fetch studies from ClinicalTrials.gov API and save to a local JSON file.
 
     The API returns pages and a `nextPageToken` when more pages are available.
@@ -667,14 +655,14 @@ def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: in
             resp.raise_for_status()
             payload = resp.json()
         except Exception as e:
-            print(f"Error fetching from API: {e}")
+            logger.info(f"Error fetching from API: {e}")
             break
 
         studies = payload.get("studies") or payload.get("data") or []
         all_studies.extend(studies)
 
         page += 1
-        print(f"Fetched page {page} - {len(studies)} studies (total {len(all_studies)})")
+        logger.info(f"Fetched page {page} - {len(studies)} studies (total {len(all_studies)})")
 
         next_token = payload.get("nextPageToken")
         if not next_token:
@@ -682,7 +670,7 @@ def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: in
 
         page_token = next_token
         if max_pages and page >= max_pages:
-            print("Reached max_pages limit")
+            logger.info("Reached max_pages limit")
             break
 
         time.sleep(delay)
@@ -691,9 +679,9 @@ def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: in
     try:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump({"studies": all_studies}, f, ensure_ascii=False, indent=2)
-        print(f"Saved {len(all_studies)} studies to {output_file}")
+        logger.info(f"Saved {len(all_studies)} studies to {output_file}")
     except Exception as e:
-        print(f"Error writing output file: {e}")
+        logger.info(f"Error writing output file: {e}")
 
 
 
@@ -732,7 +720,7 @@ def extract_study_info(study_json: dict) -> dict:
         
         return study_info
     except Exception as e:
-        print(f"Error extracting study info: {e}")
+        logger.info(f"Error extracting study info: {e}")
         return {}
 
 
@@ -822,6 +810,50 @@ def extract_sponsors(study_json: dict) -> List[dict]:
         return []
 
 
+def country_to_continent(country_name: str) -> str | None:
+    import pycountry
+    import pycountry_convert as pc
+    import unicodedata
+
+    CONTINENT_NAMES = {
+        "AF": "Africa", "AN": "Antarctica", "AS": "Asia",
+        "EU": "Europe", "NA": "North America", "OC": "Oceania", "SA": "South America",
+    }
+
+    COUNTRY_OVERRIDES = {
+        "United States": "US", "United States of America": "US",
+        "Russia": "RU", "South Korea": "KR", "North Korea": "KP",
+        "Côte d'Ivoire": "CI", "Cote d'Ivoire": "CI",
+        "Czechia": "CZ", "Iran": "IR", "Vietnam": "VN",
+        "Turkey": "TR", "Turkiye": "TR", "Türkiye": "TR",
+    }
+
+    if not country_name or not isinstance(country_name, str):
+        return None
+
+    name = country_name.strip()
+    if "(" in name and ")" in name:
+        name = name.split("(")[0].strip()
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+
+    alpha2 = COUNTRY_OVERRIDES.get(name)
+    if not alpha2:
+        try:
+            country = pycountry.countries.lookup(name)
+            alpha2 = country.alpha_2
+        except LookupError:
+            return None
+        except Exception:
+            return None
+
+    try:
+        code = pc.country_alpha2_to_continent_code(alpha2)
+        return CONTINENT_NAMES.get(code)
+    except Exception:
+        return None
+
+
+
 def extract_locations(study_json: dict) -> List[dict]:
     """Extract locations from JSON"""
     try:
@@ -830,11 +862,17 @@ def extract_locations(study_json: dict) -> List[dict]:
         
         result = []
         for loc in locations:
+            country= loc.get('country', '')
+            if country not in [None, '']:
+                continent = country_to_continent(country_name=country) 
+            else:
+                continent = None
             result.append({
                 'facility': loc.get('facility', ''),
                 'city': loc.get('city', ''),
                 'state': loc.get('state', ''),
                 'country': loc.get('country', ''),
+                'continent': continent,
             })
         return result
     except:
@@ -864,11 +902,11 @@ def populate_from_json(session, json_file: str):
     studies_json = load_studies_from_json(json_file)
     
     if not studies_json:
-        print(f"No studies found in {json_file}")
+        logger.info(f"No studies found in {json_file}")
         return
     
-    print(f"\nFound {len(studies_json)} studies in JSON file")
-    print("=" * 70)
+    logger.info(f"\nFound {len(studies_json)} studies in JSON file")
+    logger.info("=" * 70)
     
     loaded_count = 0
     errors = []
@@ -949,29 +987,29 @@ def populate_from_json(session, json_file: str):
                     pass
             
             loaded_count += 1
-            print(f"✓ Loaded: {study_info.get('nct_id')} - {study_info.get('title')[:60]}")
+            logger.info(f"✓ Loaded: {study_info.get('nct_id')} - {study_info.get('title')[:60]}")
             
         except Exception as e:
             errors.append(f"Study {idx}: {str(e)}")
     
     session.commit()
     
-    print("\n" + "=" * 70)
-    print(f"✓ Successfully loaded {loaded_count} studies")
+    logger.info("\n" + "=" * 70)
+    logger.info(f"✓ Successfully loaded {loaded_count} studies")
     if errors:
-        print(f"⚠ Errors encountered: {len(errors)}")
+        logger.info(f"⚠ Errors encountered: {len(errors)}")
         for error in errors[:5]:
-            print(f"  - {error}")
+            logger.info(f"  - {error}")
     
-    # Print data availability report
+    # logger.info data availability report
     print_data_availability_report()
 
 
 def print_data_availability_report():
-    """Print a report on available vs missing data fields"""
-    print("\n" + "=" * 70)
-    print("DATA AVAILABILITY REPORT")
-    print("=" * 70)
+    """logger.info a report on available vs missing data fields"""
+    logger.info("\n" + "=" * 70)
+    logger.info("DATA AVAILABILITY REPORT")
+    logger.info("=" * 70)
     
     available_fields = {
         "Studies Table": [
@@ -1016,7 +1054,6 @@ def print_data_availability_report():
             ("City", "✓ Usually available"),
             ("State", "◐ Sometimes available"),
             ("Country", "✓ Usually available"),
-            ("Continent", "✗ NOT available in JSON (can be derived)"),
         ],
         "Study Design Table": [
             ("Allocation", "✓ Usually available"),
@@ -1029,49 +1066,50 @@ def print_data_availability_report():
     }
     
     for table, fields in available_fields.items():
-        print(f"\n{table}:")
+        logger.info(f"\n{table}:")
         for field, availability in fields:
-            print(f"  {availability:40} {field}")
+            logger.info(f"  {availability:40} {field}")
     
-    print("\n" + "=" * 70)
-    print("LEGEND:")
-    print("  ✓ = Reliably available in JSON")
-    print("  ◐ = Sometimes available (may be null/empty)")
-    print("  ✗ = Not available in JSON (needs external source)")
-    print("=" * 70)
+    logger.info("\n" + "=" * 70)
+    logger.info("LEGEND:")
+    logger.info("  ✓ = Reliably available in JSON")
+    logger.info("  ◐ = Sometimes available (may be null/empty)")
+    logger.info("  ✗ = Not available in JSON (needs external source)")
+    logger.info("=" * 70)
 
 
 def main():
     """Main entry point"""
-    print("Clinical Trials Database Generator")
-    print("=" * 70)
+    logger.info("Clinical Trials Database Generator")
+    logger.info("=" * 70)
     
     import sys
     
     # Always fetch from the ClinicalTrials.gov API and populate the DB.
     # We cap the number of pages to 100 to avoid long-running downloads.
     json_file = "studies_api.json"
-    max_pages = 100
-    print(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
-    print("Note: Downloading data from the API can take up to ~3 minutes depending on network and page limits.")
+    max_pages = 10  # Limit to 10 pages for quicker testing; adjust as needed.
+    logger.info(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
+    logger.info("Note: Downloading data from the API can take up to ~3 minutes depending on network and page limits.")
     fetch_studies_from_api(json_file, page_size=100, max_pages=max_pages)
-    print(f"\nLoading from JSON file: {json_file}")
+    logger.info(f"\nLoading from JSON file: {json_file}")
     engine, Session = create_engine_and_session()
 
     if not engine or not Session:
-        print("Failed to create database engine")
+        logger.info("Failed to create database engine")
         return
 
     session = Session()
 
     try:
-        print("Creating database schema...")
+        logger.info("Creating database schema...")
         create_schema(engine)
-        print(f"\nLoading from JSON file: {json_file}")
+        logger.info(f"\nLoading from JSON file: {json_file}")
         populate_from_json(session, json_file)
-        print("\n✓ Database population from JSON completed successfully!")
+        populate_from_json
+        logger.info("\n✓ Database population from JSON completed successfully!")
     except Exception as e:
-        print(f"Error: {e}")
+        logger.info(f"Error: {e}")
         session.rollback()
     finally:
         session.close()
