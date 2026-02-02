@@ -19,13 +19,14 @@ load_dotenv()
 API_URL = os.getenv('API_URL', 'https://clinicaltrials.gov/api/v2/studies')
 
 # MySQL Database configuration from .env
-MYSQL_USER = os.getenv('MYSQL_USER', 'user')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'pass')
-MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
-MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')
-MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'clinicaltrials')
+MYSQL_USER = os.getenv('MYSQL_USER') or os.getenv('DB_USER') or 'user'
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD') or os.getenv('DB_PASSWORD') or 'pass'
+# Prefer MYSQL_HOST, then DB_HOST (used by compose), then default to 'mysql' (service name)
+MYSQL_HOST = os.getenv('MYSQL_HOST') or os.getenv('DB_HOST') or 'mysql'
+MYSQL_PORT = os.getenv('MYSQL_PORT') or os.getenv('DB_PORT') or '3306'
+MYSQL_DATABASE = os.getenv('MYSQL_DATABASE') or os.getenv('DB_NAME') or 'clinicaltrials'
 
-# Database URL for MySQL
+# Database URL for SQLAlchemy (MySQL)
 DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 
 Base = declarative_base()
@@ -645,7 +646,7 @@ def load_studies_from_json(json_file: str):
         return []
 
 
-def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: int | None = None, delay: float = 0.2):
+def fetch_studies_from_api(output_file: str, page_size: int = 100, max_pages: int | None = 100, delay: float = 0.2):
     """Fetch studies from ClinicalTrials.gov API and save to a local JSON file.
 
     The API returns pages and a `nextPageToken` when more pages are available.
@@ -1047,70 +1048,33 @@ def main():
     
     import sys
     
-    # Check for JSON file argument
-    if len(sys.argv) > 1 and sys.argv[1] in ("api", "--api"):
-        # fetch from remote API and then populate
-        json_file = "studies_api.json"
-        max_pages = None
-        if len(sys.argv) > 2:
-            try:
-                max_pages = int(sys.argv[2])
-            except:
-                max_pages = None
-        print(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
-        fetch_studies_from_api(json_file, page_size=100, max_pages=max_pages)
+    # Always fetch from the ClinicalTrials.gov API and populate the DB.
+    # We cap the number of pages to 100 to avoid long-running downloads.
+    json_file = "studies_api.json"
+    max_pages = 100
+    print(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
+    print("Note: Downloading data from the API can take up to ~3 minutes depending on network and page limits.")
+    fetch_studies_from_api(json_file, page_size=100, max_pages=max_pages)
+    print(f"\nLoading from JSON file: {json_file}")
+    engine, Session = create_engine_and_session()
+
+    if not engine or not Session:
+        print("Failed to create database engine")
+        return
+
+    session = Session()
+
+    try:
+        print("Creating database schema...")
+        create_schema(engine)
         print(f"\nLoading from JSON file: {json_file}")
-        engine, Session = create_engine_and_session()
-        
-        if not engine or not Session:
-            print("Failed to create database engine")
-            return
-        
-        session = Session()
-        
-        try:
-            print("Creating database schema...")
-            create_schema(engine)
-            print(f"\nLoading from JSON file: {json_file}")
-            populate_from_json(session, json_file)
-            print("\n✓ Database population from JSON completed successfully!")
-        except Exception as e:
-            print(f"Error: {e}")
-            session.rollback()
-        finally:
-            session.close()
-    else:
-        # Use faker-generated data
-        engine, Session = create_engine_and_session()
-        
-        if not engine or not Session:
-            print("Failed to create database engine")
-            return
-        
-        session = Session()
-        
-        try:
-            print("Creating database schema...")
-            create_schema(engine)
-            
-            print(f"Generating and populating sample studies...")
-            studies = generate_studies(session, 50)
-            
-            generate_conditions(session, studies)
-            generate_interventions(session, studies)
-            generate_outcomes(session, studies)
-            generate_sponsors(session, studies)
-            generate_locations(session, studies)
-            generate_study_design(session, studies)
-            
-            print("\n✓ Database population with sample data completed successfully!")
-            print("\nTip: To load from JSON file, run: python main.py <path-to-json-file>")
-            print("Tip: To fetch from ClinicalTrials.gov API and populate, run: python main.py api [max_pages]")
-        except Exception as e:
-            print(f"Error: {e}")
-            session.rollback()
-        finally:
-            session.close()
+        populate_from_json(session, json_file)
+        print("\n✓ Database population from JSON completed successfully!")
+    except Exception as e:
+        print(f"Error: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
