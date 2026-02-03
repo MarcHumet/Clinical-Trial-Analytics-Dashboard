@@ -11,8 +11,11 @@ dependencies = [
     "jupyterlab>=4.5.3",
     "loguru>=0.7.3",
     "matplotlib>=3.10.8",
+    "mysql-connector-python>=9.5.0",
+    "mysqlclient>=2.2.7",
     "notebook>=7.5.3",
     "pandas>=2.3.3",
+    "plotly>=6.5.2",
     "pycountry>=24.6.1",
     "pycountry-convert>=0.7.2",
     "pydantic>=2.0.0",
@@ -23,4 +26,9 @@ dependencies = [
     "seaborn>=0.13.2",
     "sqlalchemy>=2.0.0",
     "tqdm>=4.67.2",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
 ]

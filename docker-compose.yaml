@@ -10,6 +10,7 @@ services:
       MYSQL_PASSWORD: pass
     ports:
       - "3306:3306"
+    command: --bind-address=0.0.0.0  # Escucha TODO
     volumes:
       - ./ddbb/ddbb.sql:/docker-entrypoint-initdb.d/01-ddbb.sql  # Runs on first init
       - mysql_data:/var/lib/mysql

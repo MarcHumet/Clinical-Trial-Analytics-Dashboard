@@ -100,8 +100,8 @@ def get_db_connection_with_retry(retries=3, delay=1):
     return None
 
 # Sidebar navigation
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Distribution Analysis", "Search Studies"])
+st.sidebar.title("Section Selector")
+page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Distribution Analysis", "Time Trends", "Search Studies"])
 
 if page == "Home":
     st.subheader("Welcome to the Clinical Trial Analytics Dashboard")
@@ -649,6 +649,137 @@ elif page == "Distribution Analysis":
             
         except Error as e:
             st.error(f"Error analyzing data: {e}")
+        finally:
+            conn.close()
+
+elif page == "Time Trends":
+    st.subheader("📈 Time Trends Analysis")
+    
+    conn = get_db_connection_with_retry(retries=3, delay=0.5)
+    if not conn:
+        st.error("Could not connect to the database. Please ensure MySQL is running and accessible.")
+    else:
+        try:
+            cursor = conn.cursor(dictionary=True)
+            
+            # Study Initiation Trends Over Time
+            st.subheader("🚀 Study Initiation Trends")
+            cursor.execute("""
+                SELECT YEAR(start_date) as year, COUNT(*) as study_count 
+                FROM studies 
+                WHERE start_date IS NOT NULL 
+                GROUP BY YEAR(start_date) 
+                ORDER BY year
+            """)
+            yearly_data = pd.DataFrame(cursor.fetchall())
+            
+            if not yearly_data.empty:
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig = px.line(yearly_data, x='year', y='study_count', 
+                                  title="Studies Started by Year", 
+                                  markers=True)
+                    fig.update_layout(xaxis_title="Year", yaxis_title="Number of Studies")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    fig = px.bar(yearly_data, x='year', y='study_count', 
+                                 title="Studies Started by Year (Bar)")
+                    fig.update_layout(xaxis_title="Year", yaxis_title="Number of Studies")
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # Phase Evolution Over Time
+            st.subheader("🔬 Phase Distribution Evolution")
+            cursor.execute("""
+                SELECT YEAR(start_date) as year, phase, COUNT(*) as count 
+                FROM studies 
+                WHERE start_date IS NOT NULL AND phase IS NOT NULL 
+                GROUP BY YEAR(start_date), phase 
+                ORDER BY year, phase
+            """)
+            phase_yearly_data = pd.DataFrame(cursor.fetchall())
+            
+            if not phase_yearly_data.empty:
+                fig = px.bar(phase_yearly_data, x='year', y='count', color='phase',
+                            title="Phase Distribution Over Time",
+                            barmode='stack')
+                fig.update_layout(xaxis_title="Year", yaxis_title="Number of Studies")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Enrollment Trends
+            st.subheader("👥 Enrollment Trends Over Time")
+            cursor.execute("""
+                SELECT YEAR(start_date) as year, 
+                       AVG(enrollment) as avg_enrollment,
+                       COUNT(*) as study_count
+                FROM studies 
+                WHERE start_date IS NOT NULL AND enrollment IS NOT NULL 
+                GROUP BY YEAR(start_date) 
+                ORDER BY year
+            """)
+            enrollment_trends = pd.DataFrame(cursor.fetchall())
+            
+            if not enrollment_trends.empty:
+                col3, col4 = st.columns(2)
+                with col3:
+                    fig = px.line(enrollment_trends, x='year', y='avg_enrollment',
+                                  title="Average Enrollment by Year",
+                                  markers=True)
+                    fig.update_layout(xaxis_title="Year", yaxis_title="Average Enrollment")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col4:
+                    fig = px.scatter(enrollment_trends, x='year', y='avg_enrollment', 
+                                    size='study_count',
+                                    title="Enrollment vs Studies Count",
+                                    hover_data=['study_count'])
+                    fig.update_layout(xaxis_title="Year", yaxis_title="Average Enrollment")
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            # Study Completion Trends
+            st.subheader("🏁 Study Completion Trends")
+            cursor.execute("""
+                SELECT YEAR(completion_date) as year, COUNT(*) as completed_count 
+                FROM studies 
+                WHERE completion_date IS NOT NULL 
+                GROUP BY YEAR(completion_date) 
+                ORDER BY year
+            """)
+            completion_data = pd.DataFrame(cursor.fetchall())
+            
+            if not completion_data.empty:
+                fig = px.area(completion_data, x='year', y='completed_count',
+                             title="Studies Completed by Year")
+                fig.update_layout(xaxis_title="Year", yaxis_title="Completed Studies")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Top Conditions Trends
+            st.subheader("🦠 Top Conditions Over Time")
+            cursor.execute("""
+                SELECT YEAR(s.start_date) as year, c.condition_name, COUNT(*) as count
+                FROM studies s
+                JOIN conditions c ON s.study_id = c.study_id
+                WHERE s.start_date IS NOT NULL 
+                GROUP BY YEAR(s.start_date), c.condition_name
+                HAVING COUNT(*) >= 3
+                ORDER BY year, count DESC
+            """)
+            conditions_trends = pd.DataFrame(cursor.fetchall())
+            
+            if not conditions_trends.empty:
+                # Get top 10 conditions overall
+                top_conditions = conditions_trends.groupby('condition_name')['count'].sum().nlargest(10).index
+                filtered_conditions = conditions_trends[conditions_trends['condition_name'].isin(top_conditions)]
+                
+                if not filtered_conditions.empty:
+                    fig = px.line(filtered_conditions, x='year', y='count', 
+                                 color='condition_name',
+                                 title="Top 10 Conditions Trends Over Time")
+                    fig.update_layout(xaxis_title="Year", yaxis_title="Number of Studies")
+                    st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Error in time trends analysis: {e}")
         finally:
             conn.close()
 
