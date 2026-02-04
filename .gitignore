@@ -6,7 +6,6 @@ dist/
 wheels/
 *.egg-info
 *.pyc
-.env
 
 # Virtual environments
 .venv

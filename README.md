@@ -8,9 +8,15 @@ docker compose up -d
 
 
 # How to run it
-In a bash terminal go to root path of the repository where Docker-compose.yml is allocated and proceed
 
-1. Build the images
+## Quick Start (Docker)
+```bash
+# Clone and start
+git clone https://github.com/yourusername/repo
+cd repo
+docker-compose up -d
+
+#
 ```bash
 docker compose build
 ```
@@ -25,7 +31,7 @@ docker exec -it $(docker ps -qf "name=ollama") ollama pull llama3.2
 
 # How it was developed
 
-1.  Implement ddbb mysql with docker and retrive data from goverment's API (set a maximum of 100 pages tha involve 10000 studies)
+1. Implement ddbb mysql with docker and retrive data from goverment's API (set a maximum of 100 pages tha involve 10000 studies)
 2. Implement streamlit frontend with docker to add up funtionalities.
 3. Create&test inital page of streamlit to download data from API and fill the mySQL ddbb.
 4. Create&test of initial overview of data in a table and its completness
@@ -59,3 +65,43 @@ criteria of colors of text in availability's table:
 |------------|------------|-------------|
 | no "time_perspective"  | time_perspective VARCHAR(50)   | As it is not found in the downloaded json I delete this column |
 | "type" column in  interventions table  | "intervention_type" column in  interventions table   |set "intervention_type" column in  interventions table   |
+
+
+# Answer to Business questions
+**Relevant questions** proposed in the initial DA test are answered in  the 5th section of the following Jupyter Notebook (where most data work is done using pandas and sql queries (mysql) besides other python packages):  
+
+[Open the analysis notebook](CLINICAL_TRIAL_ANALYTICAL_EDA.ipynb)
+
+# Bonus Questions
+Please provide brief answers to these questions:
+1. Stakeholder Communication: How would you adapt your dashboard and presentation for a non-technical executive
+versus a clinical operations manager?
+First understand needs and knowdelege level to adapt kind of graphs and 
+2. Data Quality at Scale: What automated data quality checks would you implement if this pipeline ran daily with new
+incoming data?
+    Next points showld be checked automatically:
+    - Missing data (accepted ratio? critical data with 0% missing data allowed?)
+    - Data Formats keeps the same way (create alerts and manage input for data formats variability according to historical format of input values and observed variations)
+    - Check duplicity of data. 
+    - Check for unexpected long performance time for early degradation detection of the pipeline.
+3. Self-Service Analytics: How would you design this solution to enable stakeholders to explore the data themselves
+without your direct involvement?
+    - Digest data (clean, filter, transform) to provide high data quality. 
+    - Actionable dashboard where stakeholders can play with requested variables to check agreed KPIs or relevant variables. Preferibly visual output adapted to stakeholder knowdlege!
+4. Compliance Considerations: If this were a GxP-regulated environment, what additional documentation or validation
+would be required for your analysis?
+    The key point is to prove the whole process is repeatable, traceable, and secure. 
+    Next documents should be written before start:
+    - User requierements
+    - Functional requirements
+    - Traceability plan
+    - Most relevant document: Statistical Analysis Plan (define how you handle missing data (Imputation) and outliers before you see the results. Archive final code, frozen dataset,... in a Trial Master File)
+    After work is done:
+    Validate the solution from the points of IQ (installation qualification), OQ (operational qualification) and PQ (performance qualification)
+    All way long:
+    Risk Analysis of Data Integrity and Security (ALCOA+)
+
+5. Advanced Analytics: What predictive or machine learning models could add value to this clinical trial analytics use case?
+    - Use predictive models for trial success: probability of trial completion (XGBoost / LightGBM /multivariable regression model)
+    - Survival Analysis (Time-to-Event): predict when trial is going to fail (survival curve) with Random Survival Forests (RSF) or 
+    DeepSurv

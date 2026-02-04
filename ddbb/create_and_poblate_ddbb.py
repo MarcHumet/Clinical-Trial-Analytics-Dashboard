@@ -1111,7 +1111,7 @@ def main():
     # Always fetch from the ClinicalTrials.gov API and populate the DB.
     # We cap the number of pages to 100 to avoid long-running downloads.
     json_file = "studies_api.json"
-    max_pages = 100  # Limit to 10 pages for quicker testing; adjust as needed.
+    max_pages = 10  # Limit to 100 pages for quicker testing; adjust as needed.
     logger.info(f"Fetching studies from ClinicalTrials.gov API into {json_file} (max_pages={max_pages})")
     logger.info("Note: Downloading data from the API can take up to ~3 minutes depending on network and page limits.")
     fetch_studies_from_api(json_file, page_size=100, max_pages=max_pages)
@@ -1125,12 +1125,51 @@ def main():
     session = Session()
 
     try:
+        # Ensure clean session state
+        session.rollback()
+        
         logger.info("Creating database schema...")
         create_schema(engine)
         logger.info(f"\nLoading from JSON file: {json_file}")
         populate_from_json(session, json_file)
-        populate_from_json
         logger.info("\n✓ Database population from JSON completed successfully!")
+        
+        # Run enrollment success analysis after successful population
+        logger.info("\n" + "=" * 70)
+        logger.info("Running enrollment success analysis...")
+        try:
+            # Import the enrollment success module
+            import sys
+            import os
+            
+            # Add the parent directory to Python path so we can import from src
+            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            sys.path.insert(0, parent_dir)
+            
+            from src.enrollment_success import run_enrollment_success_analysis
+            
+            # Run the analysis using the same database engine
+            logger.info("Calculating enrollment success metrics...")
+            results_df = run_enrollment_success_analysis(engine)
+            
+            if not results_df.empty:
+                study_count = len(results_df)
+                logger.info(f"✓ Enrollment success metrics calculated for {study_count} studies")
+                logger.info("   Results saved to: src/results/enrollment_success_metrics.csv")
+                
+                # Display quick summary
+                mean_score = results_df['composite_success_score'].mean()
+                logger.info(f"   Average composite success score: {mean_score:.1f}/100")
+                
+                top_performers = results_df.nlargest(3, 'composite_success_score')['composite_success_score']
+                logger.info(f"   Top 3 success scores: {', '.join([f'{score:.1f}' for score in top_performers])}")
+            else:
+                logger.warning("No studies found for enrollment analysis")
+                
+        except Exception as enrollment_error:
+            logger.warning(f"Database populated successfully, but enrollment analysis failed: {str(enrollment_error)}")
+            logger.warning("This may be due to missing dependencies or data format issues")
+        
     except Exception as e:
         logger.info(f"Error: {e}")
         session.rollback()

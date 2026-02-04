@@ -16,6 +16,9 @@ import plotly.express as px
 import seaborn as sns
 from matplotlib import pyplot as plt
 from loguru import logger
+import numpy as np
+from datetime import datetime, date
+from sqlalchemy import create_engine, text
 
 # Ensure project root is on sys.path for ddbb imports
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +62,176 @@ def setup_dark_theme():
     plt.rcParams['axes.labelcolor'] = 'white'
     plt.rcParams['lines.color'] = 'white'
 
+# Enrollment Success Analytics Functions
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def load_enrollment_success_data():
+    """Load and process enrollment success data from MySQL database"""
+    
+    # Database connection configuration
+    mysql_url = os.getenv('MYSQL_DATABASE_URL') or os.getenv('SQLALCHEMY_DATABASE_URL')
+    
+    if not mysql_url:
+        mysql_user = os.getenv('MYSQL_USER') or os.getenv('DB_USER') or 'user'
+        mysql_password = os.getenv('MYSQL_PASSWORD') or os.getenv('DB_PASSWORD') or 'pass'
+        # Prefer Docker environment variables, then fall back to service name 'mysql'
+        mysql_host = os.getenv('DB_HOST') or os.getenv('MYSQL_HOST') or 'mysql'
+        mysql_port = os.getenv('DB_PORT') or os.getenv('MYSQL_PORT') or '3306'
+        mysql_db = os.getenv('DB_NAME') or os.getenv('MYSQL_DATABASE') or 'clinicaltrials'
+        
+        mysql_url = (
+            f"mysql+pymysql://{mysql_user}:{mysql_password}@"
+            f"{mysql_host}:{mysql_port}/{mysql_db}"
+        )
+    
+    try:
+        engine = create_engine(mysql_url)
+        with engine.connect() as conn:
+            # Load studies data with enrollment metrics
+            query = """
+            SELECT 
+                s.nct_id,
+                s.title,
+                s.status,
+                s.phase,
+                s.study_type,
+                s.start_date,
+                s.completion_date,
+                s.primary_completion_date,
+                s.enrollment,
+                s.enrollment_type,
+                s.brief_summary,
+                s.gender,
+                s.minimum_age,
+                s.maximum_age,
+                COUNT(DISTINCT c.condition_id) as condition_count,
+                COUNT(DISTINCT i.intervention_id) as intervention_count,
+                COUNT(DISTINCT l.facility) as location_count,
+                GROUP_CONCAT(DISTINCT c.condition_name SEPARATOR '; ') as conditions,
+                GROUP_CONCAT(DISTINCT l.country SEPARATOR '; ') as countries
+            FROM studies s
+            LEFT JOIN conditions c ON s.study_id = c.study_id
+            LEFT JOIN interventions i ON s.study_id = i.study_id
+            LEFT JOIN locations l ON s.study_id = l.study_id
+            GROUP BY s.study_id
+            HAVING s.enrollment IS NOT NULL AND s.enrollment > 0
+            """
+            
+            df = pd.read_sql_query(text(query), conn)
+            
+        # Calculate enrollment metrics
+        df = calculate_enrollment_metrics(df)
+        return df
+        
+    except Exception as e:
+        st.warning(f"Database connection failed: {str(e)}")
+        st.info("Attempting to load from CSV file...")
+        
+        # Try to load from CSV file as fallback
+        try:
+            csv_path = Path(__file__).parent / 'results' / 'enrollment_success_metrics.csv'
+            if csv_path.exists():
+                df = pd.read_csv(csv_path)
+                st.success("Successfully loaded enrollment success data from CSV file!")
+                return df
+            else:
+                st.error("CSV file not found. Please run the database population script first.")
+                return pd.DataFrame()
+        except Exception as csv_error:
+            st.error(f"Error loading CSV file: {str(csv_error)}")
+            return pd.DataFrame()
+
+def calculate_enrollment_metrics(df):
+    """Calculate various enrollment success metrics"""
+    
+    # Convert dates
+    date_columns = ['start_date', 'completion_date', 'primary_completion_date']
+    for col in date_columns:
+        df[col] = pd.to_datetime(df[col], errors='coerce')
+    
+    # Calculate enrollment rate (participants per month)
+    df['duration_days'] = (df['completion_date'] - df['start_date']).dt.days
+    df['duration_months'] = df['duration_days'] / 30.44
+    df['duration_months'] = df['duration_months'].clip(lower=1)  # Minimum 1 month
+    
+    # Enrollment rate
+    df['enrollment_rate'] = df['enrollment'] / df['duration_months']
+    df['enrollment_rate'] = df['enrollment_rate'].fillna(0)
+    
+    # Enrollment rate tiers
+    def get_rate_tier(rate):
+        if pd.isna(rate) or rate == 0:
+            return 'Unknown'
+        elif rate > 50:
+            return 'Excellent (>50/month)'
+        elif rate >= 10:
+            return 'Good (10-50/month)'
+        elif rate >= 1:
+            return 'Adequate (1-10/month)'
+        else:
+            return 'Slow (<1/month)'
+    
+    df['enrollment_rate_tier'] = df['enrollment_rate'].apply(get_rate_tier)
+    
+    # Success percentage vs benchmark (10 participants/month)
+    expected_enrollment = df['duration_months'] * 10
+    df['success_percentage'] = (df['enrollment'] / expected_enrollment) * 100
+    df['success_percentage'] = df['success_percentage'].clip(upper=200)  # Cap at 200%
+    
+    # Success tiers
+    def get_success_tier(pct):
+        if pd.isna(pct):
+            return 'Unknown'
+        elif pct >= 100:
+            return 'Exceeded (≥100%)'
+        elif pct >= 75:
+            return 'Met (75-100%)'
+        elif pct >= 50:
+            return 'Below (50-75%)'
+        else:
+            return 'Significantly Below (<50%)'
+    
+    df['success_tier'] = df['success_percentage'].apply(get_success_tier)
+    
+    # Status success score
+    status_scores = {
+        'COMPLETED': 100,
+        'ACTIVE_NOT_RECRUITING': 85,
+        'RECRUITING': 60,
+        'ENROLLING_BY_INVITATION': 55,
+        'NOT_YET_RECRUITING': 30,
+        'SUSPENDED': 20,
+        'TERMINATED': 10,
+        'WITHDRAWN': 5,
+        'UNKNOWN': 50,
+    }
+    df['status_score'] = df['status'].map(status_scores).fillna(50)
+    
+    # Composite success score (0-100)
+    # Factor 1: Enrollment completeness (40%)
+    enrollment_score = np.minimum(df['enrollment'] / 500 * 40, 40)  # Max 40 points for 500+ participants
+    
+    # Factor 2: Status success (30%)
+    status_component = df['status_score'] * 0.3
+    
+    # Factor 3: Temporal efficiency (20%)
+    rate_component = np.minimum(df['enrollment_rate'] / 50 * 20, 20)  # Max 20 points for 50+/month
+    
+    # Factor 4: Data completeness (10%)
+    data_completeness = (
+        (df['brief_summary'].notna()).astype(int) * 2 +
+        (df['condition_count'] > 0).astype(int) * 3 +
+        (df['intervention_count'] > 0).astype(int) * 2 +
+        (df['location_count'] > 0).astype(int) * 3
+    )
+    data_component = data_completeness  # Max 10 points
+    
+    df['composite_score'] = enrollment_score + status_component + rate_component + data_component
+    
+    # Percentile rankings
+    df['success_percentile'] = df['composite_score'].rank(pct=True) * 100
+    
+    return df
+
 # Title and description
 st.title("🏥 Clinical Trial Analytics Dashboard")
 st.markdown("---")
@@ -101,15 +274,19 @@ def get_db_connection_with_retry(retries=3, delay=1):
 
 # Sidebar navigation
 st.sidebar.title("Section Selector")
-page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Distribution Analysis", "Time Trends", "Search Studies"])
+page = st.sidebar.radio("Select a page:", ["Home", "Data Overview & Completeness", "Distribution Analysis", "Time Trends", "Enrollment Success Analytics"])
 
 if page == "Home":
     st.subheader("Welcome to the Clinical Trial Analytics Dashboard")
     st.write("""
     This dashboard provides:
-    - **Data Overview & Completeness*: View comprehensive statistics about clinical trials
-    - **Analysis**: Perform detailed analysis on trial data
-    - **Search Studies**: Find and explore specific clinical trials
+    - **Home**: to populate the database with clinical trial data from the ClinicalTrials.gov API 
+    - **Data Overview & Completeness**: View comprehensive statistics about clinical trials
+    - **Distribution Analysis**: Perform detailed analysis on trial data
+    - **Time Trends**: Explore trends over time in clinical trial data
+    - **Enrollment Success Analytics**: Analyze enrollment success metrics for clinical trials
+             
+            First time access you should poblate by pressing button  "Fill MySQL DB"
     """)
 
     if st.session_state.get("seed_summary"):
@@ -229,6 +406,36 @@ if page == "Home":
                 module.populate_from_json(session, json_file)
             session.close()
             status.success("Database population completed")
+            
+            # Run enrollment success analysis after successful population
+            with st.spinner("Calculating enrollment success metrics..."):
+                try:
+                    import subprocess
+                    import sys
+                    result = subprocess.run(
+                        [sys.executable, "src/enrollment_success.py"],
+                        cwd=".",
+                        capture_output=True,
+                        text=True,
+                        timeout=120  # 2 minute timeout
+                    )
+                    if result.returncode == 0:
+                        status.success("✓ Enrollment success metrics calculated and saved")
+                        # Show a summary of the results
+                        if "Analysis Complete" in result.stdout:
+                            lines = result.stdout.split('\n')
+                            for line in lines:
+                                if "studies analyzed" in line:
+                                    status.info(line)
+                                    break
+                    else:
+                        status.warning(f"Enrollment success calculation completed with warnings")
+                        if result.stderr:
+                            st.text(f"Details: {result.stderr[:200]}...")
+                except subprocess.TimeoutExpired:
+                    status.warning("Enrollment success calculation timed out but database population was successful")
+                except Exception as enrollment_error:
+                    status.warning(f"Database populated successfully, but enrollment analysis failed: {str(enrollment_error)[:100]}")
 
             # Clean up JSON file after successful population
             try:
@@ -783,7 +990,531 @@ elif page == "Time Trends":
         finally:
             conn.close()
 
-elif page == "Search Studies":
+elif page == "Enrollment Success Analytics":
+    st.subheader("📊 Enrollment Success Analytics")
+    st.markdown("---")
+    
+    # Load enrollment success data
+    with st.spinner("Loading enrollment success data..."):
+        df = load_enrollment_success_data()
+    
+    if df.empty:
+        st.error("No enrollment data available. Please ensure the database is populated with studies that have enrollment information.")
+        st.info("💡 Tip: Studies with zero enrollment or missing enrollment data are excluded from this analysis.")
+    else:
+        # Sidebar filters for enrollment success
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🔍 Enrollment Filters")
+        
+        # Status filter
+        status_options = ['All'] + sorted(df['status'].unique().tolist())
+        selected_status = st.sidebar.selectbox("Study Status", status_options, key="enroll_status")
+        
+        # Phase filter
+        phase_options = ['All'] + sorted([p for p in df['phase'].unique() if pd.notna(p)])
+        if phase_options:
+            selected_phase = st.sidebar.selectbox("Study Phase", phase_options, key="enroll_phase")
+        else:
+            selected_phase = 'All'
+        
+        # Enrollment range
+        if not df['enrollment'].empty:
+            min_enrollment = int(df['enrollment'].min())
+            max_enrollment = int(df['enrollment'].max())
+            enrollment_range = st.sidebar.slider(
+                "Enrollment Range", 
+                min_value=min_enrollment,
+                max_value=min(max_enrollment, 10000),  # Cap at 10k for slider performance
+                value=(min_enrollment, min(max_enrollment, 10000)),
+                key="enroll_range"
+            )
+        else:
+            enrollment_range = (0, 1000)
+        
+        # Study type filter
+        study_types = ['All'] + sorted([t for t in df['study_type'].unique() if pd.notna(t)])
+        selected_study_type = st.sidebar.selectbox("Study Type", study_types, key="enroll_type")
+        
+        # Apply filters
+        filtered_df = df.copy()
+        
+        if selected_status != 'All':
+            filtered_df = filtered_df[filtered_df['status'] == selected_status]
+        
+        if selected_phase != 'All':
+            filtered_df = filtered_df[filtered_df['phase'] == selected_phase]
+        
+        if selected_study_type != 'All':
+            filtered_df = filtered_df[filtered_df['study_type'] == selected_study_type]
+        
+        filtered_df = filtered_df[
+            (filtered_df['enrollment'] >= enrollment_range[0]) &
+            (filtered_df['enrollment'] <= enrollment_range[1])
+        ]
+        
+        if filtered_df.empty:
+            st.warning("No studies match the selected filters. Try adjusting your filter criteria.")
+        else:
+            # Key metrics section
+            st.subheader("📈 Key Enrollment Metrics")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Studies", f"{len(filtered_df):,}")
+                
+            with col2:
+                avg_enrollment = filtered_df['enrollment'].mean()
+                st.metric("Avg. Enrollment", f"{avg_enrollment:,.0f}")
+                
+            with col3:
+                avg_success_score = filtered_df['composite_score'].mean()
+                st.metric("Avg. Success Score", f"{avg_success_score:.1f}/100")
+                
+            with col4:
+                completed_pct = (filtered_df['status'] == 'COMPLETED').mean() * 100
+                st.metric("Completed Studies", f"{completed_pct:.1f}%")
+            
+            # Create tabs for different views
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "📊 Success Overview", 
+                "🎯 Performance Analysis", 
+                "🏆 Top Performers", 
+                "📋 Detailed Data",
+                "📖 Methodology"
+            ])
+            
+            with tab1:
+                st.subheader("Success Tier Distribution")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Success tier pie chart
+                    success_counts = filtered_df['success_tier'].value_counts()
+                    
+                    if not success_counts.empty:
+                        colors = {
+                            'Exceeded (≥100%)': '#00ff00',
+                            'Met (75-100%)': '#90EE90',
+                            'Below (50-75%)': '#FFD700',
+                            'Significantly Below (<50%)': '#FF6B6B',
+                            'Unknown': '#808080'
+                        }
+                        
+                        fig = px.pie(
+                            values=success_counts.values,
+                            names=success_counts.index,
+                            title="Success Tier Distribution",
+                            color=success_counts.index,
+                            color_discrete_map=colors,
+                            height=400
+                        )
+                        
+                        fig.update_traces(textinfo='percent+label')
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    # Enrollment rate distribution
+                    rate_counts = filtered_df['enrollment_rate_tier'].value_counts()
+                    
+                    if not rate_counts.empty:
+                        rate_colors = {
+                            'Excellent (>50/month)': '#00ff00',
+                            'Good (10-50/month)': '#90EE90',
+                            'Adequate (1-10/month)': '#FFD700',
+                            'Slow (<1/month)': '#FF6B6B',
+                            'Unknown': '#808080'
+                        }
+                        
+                        fig = px.pie(
+                            values=rate_counts.values,
+                            names=rate_counts.index,
+                            title="Enrollment Rate Distribution",
+                            color=rate_counts.index,
+                            color_discrete_map=rate_colors,
+                            height=400
+                        )
+                        
+                        fig.update_traces(textinfo='percent+label')
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                # Composite score distribution
+                st.subheader("Composite Success Score Distribution")
+                
+                if not filtered_df['composite_score'].empty:
+                    fig = px.histogram(
+                        filtered_df, 
+                        x='composite_score',
+                        nbins=30,
+                        title="Distribution of Composite Success Scores",
+                        labels={'composite_score': 'Composite Success Score (0-100)', 'count': 'Number of Studies'},
+                        color_discrete_sequence=['#1f77b4']
+                    )
+                    
+                    # Add vertical lines for score ranges
+                    fig.add_vline(x=80, line_dash="dash", line_color="green", 
+                                  annotation_text="Highly Successful (80+)")
+                    fig.add_vline(x=60, line_dash="dash", line_color="orange", 
+                                  annotation_text="Successful (60+)")
+                    fig.add_vline(x=40, line_dash="dash", line_color="red", 
+                                  annotation_text="Moderate (40+)")
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            with tab2:
+                st.subheader("Performance Analysis")
+                
+                # Enrollment vs Duration scatter plot
+                if len(filtered_df) > 0:
+                    fig = px.scatter(
+                        filtered_df,
+                        x='duration_months',
+                        y='enrollment',
+                        color='success_tier',
+                        size='composite_score',
+                        hover_data=['nct_id', 'title', 'status', 'enrollment_rate'],
+                        title="Enrollment vs Study Duration",
+                        labels={
+                            'duration_months': 'Study Duration (months)',
+                            'enrollment': 'Total Enrollment',
+                            'success_tier': 'Success Tier'
+                        },
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Success metrics by status
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Box plot of composite scores by status
+                        fig = px.box(
+                            filtered_df,
+                            x='status',
+                            y='composite_score',
+                            title="Success Scores by Study Status",
+                            labels={'composite_score': 'Composite Success Score'}
+                        )
+                        fig.update_xaxes(tickangle=45)
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        # Average enrollment by phase
+                        if 'phase' in filtered_df.columns and filtered_df['phase'].notna().any():
+                            phase_avg = filtered_df.groupby('phase')['enrollment'].mean().sort_values(ascending=False)
+                            
+                            if not phase_avg.empty:
+                                fig = px.bar(
+                                    x=phase_avg.index,
+                                    y=phase_avg.values,
+                                    title="Average Enrollment by Phase",
+                                    labels={'x': 'Study Phase', 'y': 'Average Enrollment'}
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab3:
+                st.subheader("🏆 Top Performing Studies")
+                
+                # Sort by composite score
+                if len(filtered_df) > 0:
+                    top_studies = filtered_df.nlargest(min(15, len(filtered_df)), 'composite_score')
+                    
+                    # Display top studies in detail
+                    st.write("**Top Studies by Composite Success Score:**")
+                    
+                    for i, (_, study) in enumerate(top_studies.head(10).iterrows(), 1):
+                        with st.expander(f"#{i} - {study['nct_id']} (Score: {study['composite_score']:.1f}/100)"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                title_text = study['title'] if pd.notna(study['title']) else "No title available"
+                                st.write(f"**Title:** {title_text[:100]}...")
+                                st.write(f"**Status:** {study['status']}")
+                                st.write(f"**Phase:** {study['phase'] if pd.notna(study['phase']) else 'N/A'}")
+                                st.write(f"**Enrollment:** {study['enrollment']:,}")
+                                
+                            with col2:
+                                st.write(f"**Enrollment Rate:** {study['enrollment_rate']:.1f}/month")
+                                st.write(f"**Success vs Benchmark:** {study['success_percentage']:.1f}%")
+                                st.write(f"**Success Tier:** {study['success_tier']}")
+                                st.write(f"**Percentile Rank:** {study['success_percentile']:.1f}%")
+                    
+                    # Top performers visualization
+                    if len(top_studies) > 0:
+                        fig = px.bar(
+                            top_studies.head(15),
+                            x='composite_score',
+                            y='nct_id',
+                            orientation='h',
+                            title=f"Top {min(15, len(top_studies))} Studies by Composite Success Score",
+                            labels={'composite_score': 'Composite Success Score', 'nct_id': 'NCT ID'},
+                            color='composite_score',
+                            color_continuous_scale='Viridis'
+                        )
+                        
+                        fig.update_layout(height=600)
+                        st.plotly_chart(fig, use_container_width=True)
+            
+            with tab4:
+                st.subheader("📋 Detailed Study Data")
+                
+                # Select columns to display
+                display_columns = [
+                    'nct_id', 'title', 'status', 'phase', 'enrollment', 
+                    'enrollment_rate', 'success_percentage', 'success_tier',
+                    'composite_score', 'success_percentile'
+                ]
+                
+                # Check which columns exist in the dataframe
+                available_columns = [col for col in display_columns if col in filtered_df.columns]
+                display_df = filtered_df[available_columns].copy()
+                
+                # Format numeric columns
+                if 'enrollment_rate' in display_df.columns:
+                    display_df['enrollment_rate'] = display_df['enrollment_rate'].round(2)
+                if 'success_percentage' in display_df.columns:
+                    display_df['success_percentage'] = display_df['success_percentage'].round(1)
+                if 'composite_score' in display_df.columns:
+                    display_df['composite_score'] = display_df['composite_score'].round(1)
+                if 'success_percentile' in display_df.columns:
+                    display_df['success_percentile'] = display_df['success_percentile'].round(1)
+                
+                # Sort by composite score by default
+                if 'composite_score' in display_df.columns:
+                    display_df = display_df.sort_values('composite_score', ascending=False)
+                
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Download button
+                csv = display_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Data as CSV",
+                    data=csv,
+                    file_name=f"enrollment_success_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+                
+                # Summary statistics
+                st.subheader("📊 Summary Statistics")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    if 'enrollment' in filtered_df.columns:
+                        st.metric("Median Enrollment", f"{filtered_df['enrollment'].median():,.0f}")
+                
+                with col2:
+                    if 'enrollment_rate' in filtered_df.columns:
+                        st.metric("Median Rate (/month)", f"{filtered_df['enrollment_rate'].median():.1f}")
+                
+                with col3:
+                    if 'composite_score' in filtered_df.columns:
+                        st.metric("Median Success Score", f"{filtered_df['composite_score'].median():.1f}")
+                
+                with col4:
+                    highly_successful = (filtered_df['composite_score'] >= 80).sum() if 'composite_score' in filtered_df.columns else 0
+                    st.metric("Highly Successful Studies", highly_successful)
+            
+            with tab5:
+                st.subheader("📖 Enrollment Success Methodology & KPI Definitions")
+                
+                st.markdown("---")
+                st.markdown("### Overview")
+                st.markdown("""
+                This dashboard calculates enrollment success using multiple complementary approaches to provide
+                a comprehensive view of clinical trial performance. The methodology is based on industry standards
+                and best practices for clinical trial analytics.
+                """)
+                
+                st.markdown("---")
+                st.markdown("### **METRIC 1: ENROLLMENT RATE** (Participants/Month)")
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("""
+                    **Formula:** `Total Enrollment ÷ Study Duration (months)`
+                    
+                    **Purpose:** Measures enrollment velocity - how quickly participants are recruited
+                    
+                    **Calculation Details:**
+                    - Duration calculated from start_date to completion_date
+                    - Minimum duration set to 1 month to avoid division errors
+                    - Accounts for variable month lengths (30.44 days average)
+                    """)
+                
+                with col2:
+                    st.markdown("""
+                    **Tier Classification:**
+                    - 🟢 **Excellent:** >50 participants/month (very rapid)
+                    - 🟡 **Good:** 10-50 participants/month (typical academic)
+                    - 🟠 **Adequate:** 1-10 participants/month (slow but viable)  
+                    - 🔴 **Slow:** <1 participant/month (concerning)
+                    
+                    **Use Case:** Identify recruitment bottlenecks and compare enrollment pace
+                    """)
+                
+                st.markdown("---")
+                st.markdown("### **METRIC 2: SUCCESS PERCENTAGE** (vs. Industry Benchmark)")
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("""
+                    **Formula:** `(Actual Enrollment ÷ Expected Enrollment) × 100%`
+                    
+                    **Benchmark:** 10 participants/month (industry standard)
+                    
+                    **Calculation:**
+                    - Expected = Duration (months) × 10 participants/month
+                    - Capped at 200% to prevent extreme outliers
+                    - Based on typical clinical trial performance data
+                    """)
+                
+                with col2:
+                    st.markdown("""
+                    **Success Tiers:**
+                    - 🟢 **Exceeded:** ≥100% (outperformed expectations)
+                    - 🟡 **Met:** 75-100% (met expectations)
+                    - 🟠 **Below:** 50-75% (underperformed)
+                    - 🔴 **Significantly Below:** <50% (major shortfall)
+                    
+                    **Use Case:** Compare performance against industry standards
+                    """)
+                
+                st.markdown("---")
+                st.markdown("### **METRIC 3: STATUS SUCCESS SCORE** (0-100 Points)")
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("""
+                    **Purpose:** Assigns success score based on study completion status
+                    
+                    **Status Weights:**
+                    - **COMPLETED:** 100 points (study finished successfully)
+                    - **ACTIVE_NOT_RECRUITING:** 85 points (enrollment closed, ongoing)
+                    - **RECRUITING:** 60 points (still enrolling)
+                    - **ENROLLING_BY_INVITATION:** 55 points (selective recruitment)
+                    - **NOT_YET_RECRUITING:** 30 points (not started)
+                    """)
+                
+                with col2:
+                    st.markdown("""
+                    **Continued Status Weights:**
+                    - **SUSPENDED:** 20 points (temporarily halted)
+                    - **TERMINATED:** 10 points (stopped early)
+                    - **WITHDRAWN:** 5 points (never started/cancelled)
+                    - **UNKNOWN:** 50 points (default for missing status)
+                    
+                    **Use Case:** Assess overall study viability and completion likelihood
+                    """)
+                
+                st.markdown("---")
+                st.markdown("### **METRIC 4: COMPOSITE SUCCESS SCORE** ⭐ (0-100 Points) - **RECOMMENDED**")
+                
+                st.markdown("""
+                This is our primary recommendation metric that combines multiple factors for a holistic assessment:
+                """)
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("""
+                    **Component Weights:**
+                    
+                    **1. Enrollment Completeness (40 points max)**
+                    - Formula: `min(40, (enrollment ÷ 500) × 40)`
+                    - Benchmark: 500+ participants = maximum points
+                    - Measures: Absolute recruitment success
+                    
+                    **2. Status Success (30 points max)**
+                    - Formula: `(Status Score ÷ 100) × 30`
+                    - Uses: Status success score from Metric 3
+                    - Measures: Study completion success
+                    """)
+                
+                with col2:
+                    st.markdown("""
+                    **3. Temporal Efficiency (20 points max)**
+                    - Formula: `min(20, (enrollment_rate ÷ 50) × 20)`
+                    - Benchmark: 50+ participants/month = maximum points
+                    - Measures: Speed of recruitment
+                    
+                    **4. Data Completeness (10 points max)**
+                    - Components: Summary, conditions, interventions, locations
+                    - Scoring: 2-3 points per complete data category
+                    - Measures: Study documentation quality
+                    """)
+                
+                st.markdown("**Composite Score Interpretation:**")
+                st.markdown("""
+                - 🟢 **80-100:** Highly successful (top tier performance)
+                - 🟡 **60-79:** Successful (above average performance)
+                - 🟠 **40-59:** Moderate success (average performance)
+                - 🟠 **20-39:** Below average (needs improvement)
+                - 🔴 **0-19:** Struggled significantly (intervention needed)
+                """)
+                
+                st.markdown("---")
+                st.markdown("### **PERCENTILE RANKING**")
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("""
+                    **Definition:** Comparative ranking against all studies in database
+                    
+                    **Calculation:** `composite_score.rank(pct=True) × 100`
+                    
+                    **Interpretation:**
+                    - 95th percentile = Better than 95% of studies
+                    - 50th percentile = Median performance
+                    - 5th percentile = Worse than 95% of studies
+                    """)
+                
+                with col2:
+                    st.markdown("""
+                    **Use Cases:**
+                    - Benchmark against peer studies
+                    - Identify top and bottom performers  
+                    - Set realistic performance targets
+                    - Portfolio performance assessment
+                    
+                    **Note:** Rankings are relative to the current database
+                    """)
+                
+                st.markdown("---")
+                st.markdown("### **Data Quality & Limitations**")
+                
+                st.markdown("""
+                **Included Studies:** Only studies with enrollment > 0 are analyzed
+                
+                **Excluded Data:** 
+                - Studies with missing enrollment information
+                - Studies with enrollment = 0
+                - Studies with invalid date ranges
+                
+                **Assumptions:**
+                - Industry benchmark: 10 participants/month average
+                - Optimal study size: 500 participants for maximum score
+                - Month length: 30.44 days (accounting for leap years)
+                
+                **Limitations:**
+                - Phase-specific benchmarks not applied
+                - Therapeutic area variations not considered  
+                - Patient population complexity not factored
+                - Geographic enrollment differences not weighted
+                """)
+                
+                st.markdown("---")
+                st.info("💡 **Tip:** Use the Composite Success Score as your primary metric, supplemented by individual components for detailed analysis.")
+
     st.subheader("Search Clinical Studies")
     search_query = st.text_input("Enter a search term:")
     
@@ -840,6 +1571,16 @@ def clear_database():
         conn.commit()
         cursor.close()
         conn.close()
+        
+        # Also delete the enrollment success CSV file
+        try:
+            csv_path = Path(__file__).parent / 'results' / 'enrollment_success_metrics.csv'
+            if csv_path.exists():
+                csv_path.unlink()
+                st.info("Enrollment success CSV file deleted")
+        except Exception as csv_error:
+            st.warning(f"Could not delete CSV file: {csv_error}")
+        
         return True
     except Exception as e:
         st.error(f"Error clearing database: {e}")
