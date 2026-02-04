@@ -16,30 +16,17 @@ git clone https://github.com/MarcHumet/Clinical-Trial-Analytics-Dashboard.git
 cd Clinical-Trial-Analytics-Dashboard
 docker-compose up -d
 ```
-When process finished, 2 dockers should be running. To get the frontend. Navigate in a Browser to next link
+When process is finished, 2 dockers should be running. To get the Stremlit frontend, navigate in a Browser to the next url:
 
     http://localhost:8501/
 
 Fortunatelly, Streamlit page should appear!
 
-FIRST TIME USE you should press  button  "Fill MySQL DB" in the "home" section to fill ddbb with data 
-from the API!!
+FIRST TIME USE you should press  button  "Fill MySQL DB" in the "home" section to fill ddbb with data from the API!! (You should repush the buttoh if ddbb is emptied)
  
 
 [Jupyter Notebook](CLINICAL_TRIAL_ANALYTICAL_EDA.ipynb) is also located in this report, 
 
-
-```bash
-docker compose build
-```
-2.Start the services
-```bash
-docker compose up -d
-```
-3. Download the model so the API can use it
-```bash
-docker exec -it $(docker ps -qf "name=ollama") ollama pull llama3.2
-```
 
 # How it was developed
 
@@ -51,8 +38,8 @@ docker exec -it $(docker ps -qf "name=ollama") ollama pull llama3.2
 
 | Column     | Table      | Methodology |
 |------------|------------|-------------|
-| continent | Locations | Derive from existing `country` column using Python packages `pycountry` (country lookup/matching) and `pycountry-convert` (country code → continent conversion): fuzzy match country name to alpha-2 code, map to continent code, convert to name (e.g., "United States" → "US" → "NA" → "North America"). [file:1] |
-| mesh_term | conditions | Populate missing `mesh_term` via Medical Subject Headings (MeSH) API: extract keywords from `condition_name`, query NLM MeSH API (`https://id.nlm.nih.gov/mesh/lookup/descriptor`), match closest MeSH descriptor and retrieve term. Handle fuzzy matching for variants; batch requests for efficiency. [file:1] |
+| continent | Locations | Derive from existing `country` column using Python packages `pycountry` (country lookup/matching) and `pycountry-convert` (country code → continent conversion): fuzzy match country name to alpha-2 code, map to continent code, convert to name (e.g., "United States" → "US" → "NA" → "North America"). |
+| mesh_term | conditions | Populate missing `mesh_term` via Medical Subject Headings (MeSH) API: extract keywords from `condition_name`, query NLM MeSH API (`https://id.nlm.nih.gov/mesh/lookup/descriptor`), match closest MeSH descriptor and retrieve term. Handle fuzzy matching for variants; batch requests for efficiency. (Not implemented in ddbb, process too long to accomplish) |
 
 5. Create&test of initial overview of data in a table and its completness
 
