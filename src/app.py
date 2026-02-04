@@ -1572,14 +1572,14 @@ def clear_database():
         cursor.close()
         conn.close()
         
-        # Also delete the enrollment success CSV file
-        try:
-            csv_path = Path(__file__).parent / 'results' / 'enrollment_success_metrics.csv'
-            if csv_path.exists():
-                csv_path.unlink()
-                st.info("Enrollment success CSV file deleted")
-        except Exception as csv_error:
-            st.warning(f"Could not delete CSV file: {csv_error}")
+        # # Also delete the enrollment success CSV file
+        # try:
+        #     csv_path = Path(__file__).parent / 'results' / 'enrollment_success_metrics.csv'
+        #     if csv_path.exists():
+        #         csv_path.unlink()
+        #         st.info("Enrollment success CSV file deleted")
+        # except Exception as csv_error:
+        #     st.warning(f"Could not delete CSV file: {csv_error}")
         
         return True
     except Exception as e:
