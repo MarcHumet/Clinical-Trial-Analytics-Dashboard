@@ -14,7 +14,7 @@ docker compose up -d
 # Clone and start
 git clone https://github.com/MarcHumet/Clinical-Trial-Analytics-Dashboard.git
 cd Clinical-Trial-Analytics-Dashboard
-docker-compose up -d
+docker compose up -d
 ```
 When process is finished, 2 dockers should be running. To get the Stremlit frontend, navigate in a Browser to the next url:
 
