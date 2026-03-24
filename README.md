@@ -1,9 +1,22 @@
 # Clinical-Trial-Analytics-Dashboard
 Developed a full-stack data workflow that automates ClinicalTrials.gov API extraction, data transformation, and visualization via analytical dashboards.
 
+## 🔒 Recent Updates (March 2026)
 
+### Security & Performance Improvements
+- ✅ **SQL Injection Prevention**: Implemented comprehensive input validation and table name whitelisting
+- ✅ **Database Connection Pooling**: Added SQLAlchemy connection pool for better performance (10 connections, 20 max overflow)
+- ✅ **Retry Logic**: Automatic retry with exponential backoff for transient failures  
+- ✅ **Configuration Management**: Centralized all settings in `src/config.py`
+- ✅ **Error Handling**: User-friendly error messages with proper logging
 
+For detailed technical information, see [DASHBOARD_WEAK_POINTS_ANALYSIS.md](DASHBOARD_WEAK_POINTS_ANALYSIS.md)
 
+---
+
+## Quick Start
+
+```bash
 docker compose up -d
 
 

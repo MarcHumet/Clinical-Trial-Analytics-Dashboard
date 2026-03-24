@@ -25,9 +25,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Import custom modules
+from src.config import config
+from src.database_service import DatabaseService, db_service
+from src.validators import validator
+from src.error_handler import ErrorHandler, safe_execute
+
 # Load environment variables
 load_dotenv()
-seed_count = int(os.getenv('page_size_limit') or 10)
+seed_count = int(os.getenv('page_size_limit') or config.API_MAX_PAGES)
 st.set_page_config(page_title="Clinical Trial Analytics Dashboard", layout="wide")
 
 # Function to apply conditional coloring to availability data
@@ -37,11 +43,11 @@ def highlight_availability(val):
         try:
             percentage = float(val.rstrip('%'))
             if percentage >= 95:
-                return 'color: #00FF00'  # Green text
+                return f'color: {config.COLOR_SUCCESS}'  # Green text
             elif percentage > 10:
-                return 'color: #FFD700'  # Yellow text
+                return f'color: {config.COLOR_WARNING}'  # Yellow text
             else:
-                return 'color: #FF6B6B'  # Red text
+                return f'color: {config.COLOR_DANGER}'  # Red text
         except:
             return ''
     return ''
@@ -51,10 +57,10 @@ def setup_dark_theme():
     """Configure dark theme for matplotlib/seaborn plots"""
     sns.set_style("darkgrid")
     plt.style.use('dark_background')
-    plt.rcParams['figure.facecolor'] = '#000000'
-    plt.rcParams['axes.facecolor'] = '#000000'
+    plt.rcParams['figure.facecolor'] = config.COLOR_BACKGROUND
+    plt.rcParams['axes.facecolor'] = config.COLOR_BACKGROUND
     plt.rcParams['axes.edgecolor'] = 'white'
-    plt.rcParams['text.color'] = 'white'
+    plt.rcParams['text.color'] = config.COLOR_TEXT
     plt.rcParams['xtick.color'] = 'white'
     plt.rcParams['ytick.color'] = 'white'
     plt.rcParams['grid.color'] = 'white'
@@ -63,81 +69,74 @@ def setup_dark_theme():
     plt.rcParams['lines.color'] = 'white'
 
 # Enrollment Success Analytics Functions
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=config.CACHE_TTL)  # Cache for configured time
 def load_enrollment_success_data():
-    """Load and process enrollment success data from MySQL database"""
-    
-    # Database connection configuration
-    mysql_url = os.getenv('MYSQL_DATABASE_URL') or os.getenv('SQLALCHEMY_DATABASE_URL')
-    
-    if not mysql_url:
-        mysql_user = os.getenv('MYSQL_USER') or os.getenv('DB_USER') or 'user'
-        mysql_password = os.getenv('MYSQL_PASSWORD') or os.getenv('DB_PASSWORD') or 'pass'
-        # Prefer Docker environment variables, then fall back to service name 'mysql'
-        mysql_host = os.getenv('DB_HOST') or os.getenv('MYSQL_HOST') or 'mysql'
-        mysql_port = os.getenv('DB_PORT') or os.getenv('MYSQL_PORT') or '3306'
-        mysql_db = os.getenv('DB_NAME') or os.getenv('MYSQL_DATABASE') or 'clinicaltrials'
-        
-        mysql_url = (
-            f"mysql+pymysql://{mysql_user}:{mysql_password}@"
-            f"{mysql_host}:{mysql_port}/{mysql_db}"
-        )
+    """Load and process enrollment success data from MySQL database with retry logic"""
     
     try:
-        engine = create_engine(mysql_url)
-        with engine.connect() as conn:
-            # Load studies data with enrollment metrics
-            query = """
-            SELECT 
-                s.nct_id,
-                s.title,
-                s.status,
-                s.phase,
-                s.study_type,
-                s.start_date,
-                s.completion_date,
-                s.primary_completion_date,
-                s.enrollment,
-                s.enrollment_type,
-                s.brief_summary,
-                s.gender,
-                s.minimum_age,
-                s.maximum_age,
-                COUNT(DISTINCT c.condition_id) as condition_count,
-                COUNT(DISTINCT i.intervention_id) as intervention_count,
-                COUNT(DISTINCT l.facility) as location_count,
-                GROUP_CONCAT(DISTINCT c.condition_name SEPARATOR '; ') as conditions,
-                GROUP_CONCAT(DISTINCT l.country SEPARATOR '; ') as countries
-            FROM studies s
-            LEFT JOIN conditions c ON s.study_id = c.study_id
-            LEFT JOIN interventions i ON s.study_id = i.study_id
-            LEFT JOIN locations l ON s.study_id = l.study_id
-            GROUP BY s.study_id
-            HAVING s.enrollment IS NOT NULL AND s.enrollment > 0
-            """
-            
-            df = pd.read_sql_query(text(query), conn)
-            
+        # Use DatabaseService with retry logic
+        query = """
+        SELECT 
+            s.nct_id,
+            s.title,
+            s.status,
+            s.phase,
+            s.study_type,
+            s.start_date,
+            s.completion_date,
+            s.primary_completion_date,
+            s.enrollment,
+            s.enrollment_type,
+            s.brief_summary,
+            s.gender,
+            s.minimum_age,
+            s.maximum_age,
+            COUNT(DISTINCT c.condition_id) as condition_count,
+            COUNT(DISTINCT i.intervention_id) as intervention_count,
+            COUNT(DISTINCT l.facility) as location_count,
+            GROUP_CONCAT(DISTINCT c.condition_name SEPARATOR '; ') as conditions,
+            GROUP_CONCAT(DISTINCT l.country SEPARATOR '; ') as countries
+        FROM studies s
+        LEFT JOIN conditions c ON s.study_id = c.study_id
+        LEFT JOIN interventions i ON s.study_id = i.study_id
+        LEFT JOIN locations l ON s.study_id = l.study_id
+        GROUP BY s.study_id
+        HAVING s.enrollment IS NOT NULL AND s.enrollment > 0
+        """
+        
+        df = DatabaseService.execute_query_with_retry(query, retries=3, delay=1.0)
+        
         # Calculate enrollment metrics
         df = calculate_enrollment_metrics(df)
         return df
         
     except Exception as e:
-        st.warning(f"Database connection failed: {str(e)}")
-        st.info("Attempting to load from CSV file...")
+        ErrorHandler.handle_warning(
+            "⚠️ Using cached data from CSV file. Database temporarily unavailable.",
+            context="load_enrollment_success_data",
+            show_user=True
+        )
+        logger.error(f"Failed to load enrollment data from database: {e}")
         
         # Try to load from CSV file as fallback
         try:
             csv_path = Path(__file__).parent / 'results' / 'enrollment_success_metrics.csv'
             if csv_path.exists():
                 df = pd.read_csv(csv_path)
-                st.success("Successfully loaded enrollment success data from CSV file!")
                 return df
             else:
-                st.error("CSV file not found. Please run the database population script first.")
+                ErrorHandler.handle_error(
+                    ValueError("No cached data available. Please run database population first."),
+                    context="load_enrollment_success_data",
+                    show_user=True
+                )
                 return pd.DataFrame()
         except Exception as csv_error:
-            st.error(f"Error loading CSV file: {str(csv_error)}")
+            ErrorHandler.handle_error(
+                csv_error,
+                context="load_enrollment_success_data CSV fallback",
+                show_user=True
+            )
             return pd.DataFrame()
 
 def calculate_enrollment_metrics(df):
@@ -157,23 +156,23 @@ def calculate_enrollment_metrics(df):
     df['enrollment_rate'] = df['enrollment'] / df['duration_months']
     df['enrollment_rate'] = df['enrollment_rate'].fillna(0)
     
-    # Enrollment rate tiers
+    # Enrollment rate tiers using config thresholds
     def get_rate_tier(rate):
         if pd.isna(rate) or rate == 0:
             return 'Unknown'
-        elif rate > 50:
-            return 'Excellent (>50/month)'
-        elif rate >= 10:
-            return 'Good (10-50/month)'
-        elif rate >= 1:
-            return 'Adequate (1-10/month)'
+        elif rate > config.ENROLLMENT_EXCELLENT_THRESHOLD:
+            return f'Excellent (>{config.ENROLLMENT_EXCELLENT_THRESHOLD}/month)'
+        elif rate >= config.ENROLLMENT_GOOD_THRESHOLD:
+            return f'Good ({config.ENROLLMENT_GOOD_THRESHOLD}-{config.ENROLLMENT_EXCELLENT_THRESHOLD}/month)'
+        elif rate >= config.ENROLLMENT_ADEQUATE_THRESHOLD:
+            return f'Adequate ({config.ENROLLMENT_ADEQUATE_THRESHOLD}-{config.ENROLLMENT_GOOD_THRESHOLD}/month)'
         else:
-            return 'Slow (<1/month)'
+            return f'Slow (<{config.ENROLLMENT_ADEQUATE_THRESHOLD}/month)'
     
     df['enrollment_rate_tier'] = df['enrollment_rate'].apply(get_rate_tier)
     
-    # Success percentage vs benchmark (10 participants/month)
-    expected_enrollment = df['duration_months'] * 10
+    # Success percentage vs benchmark
+    expected_enrollment = df['duration_months'] * config.ENROLLMENT_BENCHMARK_MONTHLY
     df['success_percentage'] = (df['enrollment'] / expected_enrollment) * 100
     df['success_percentage'] = df['success_percentage'].clip(upper=200)  # Cap at 200%
     
@@ -192,29 +191,21 @@ def calculate_enrollment_metrics(df):
     
     df['success_tier'] = df['success_percentage'].apply(get_success_tier)
     
-    # Status success score
-    status_scores = {
-        'COMPLETED': 100,
-        'ACTIVE_NOT_RECRUITING': 85,
-        'RECRUITING': 60,
-        'ENROLLING_BY_INVITATION': 55,
-        'NOT_YET_RECRUITING': 30,
-        'SUSPENDED': 20,
-        'TERMINATED': 10,
-        'WITHDRAWN': 5,
-        'UNKNOWN': 50,
-    }
-    df['status_score'] = df['status'].map(status_scores).fillna(50)
+    # Status success score using config
+    df['status_score'] = df['status'].map(config.STATUS_SCORES).fillna(50)
     
-    # Composite success score (0-100)
+    # Composite success score (0-100) using config weights
     # Factor 1: Enrollment completeness (40%)
-    enrollment_score = np.minimum(df['enrollment'] / 500 * 40, 40)  # Max 40 points for 500+ participants
+    enrollment_score = np.minimum(df['enrollment'] / 500 * (config.COMPOSITE_WEIGHT_ENROLLMENT * 100), 
+                                   config.COMPOSITE_WEIGHT_ENROLLMENT * 100)
     
     # Factor 2: Status success (30%)
-    status_component = df['status_score'] * 0.3
+    status_component = df['status_score'] * config.COMPOSITE_WEIGHT_STATUS
     
     # Factor 3: Temporal efficiency (20%)
-    rate_component = np.minimum(df['enrollment_rate'] / 50 * 20, 20)  # Max 20 points for 50+/month
+    rate_component = np.minimum(df['enrollment_rate'] / config.ENROLLMENT_EXCELLENT_THRESHOLD * 
+                                 (config.COMPOSITE_WEIGHT_TEMPORAL * 100), 
+                                 config.COMPOSITE_WEIGHT_TEMPORAL * 100)
     
     # Factor 4: Data completeness (10%)
     data_completeness = (
@@ -237,9 +228,14 @@ st.title("🏥 Clinical Trial Analytics Dashboard")
 st.markdown("---")
 st.markdown("Welcome to the Clinical Trial Analytics Dashboard. Here you can explore and analyze clinical trial data.")
 
-# Database connection function
+# Legacy database connection functions - DEPRECATED
+# Use DatabaseService instead for new code
 @st.cache_resource
 def get_db_connection():
+    """
+    DEPRECATED: Use DatabaseService.get_connection() instead
+    Kept for backward compatibility
+    """
     try:
         connection = mysql.connector.connect(
             host=os.getenv('DB_HOST', 'mysql'),
@@ -250,11 +246,16 @@ def get_db_connection():
         )
         return connection
     except Error as e:
-        st.error(f"Error connecting to database: {e}")
+        logger.error(f"Error connecting to database: {e}")
+        ErrorHandler.handle_error(e, context="get_db_connection(deprecated)", show_user=True)
         return None
 
-# Database connection with retry for the seed check
+# Database connection with retry - DEPRECATED 
 def get_db_connection_with_retry(retries=3, delay=1):
+    """
+    DEPRECATED: Use DatabaseService.execute_query_with_retry() instead
+    Kept for backward compatibility
+    """
     for attempt in range(retries):
         try:
             connection = mysql.connector.connect(
@@ -269,6 +270,7 @@ def get_db_connection_with_retry(retries=3, delay=1):
             if attempt < retries - 1:
                 time.sleep(delay)
             else:
+                logger.error(f"All {retries} connection attempts failed: {e}")
                 return None
     return None
 
@@ -299,22 +301,8 @@ if page == "Home":
     st.write("Use the button below to run the database population script. The app will download data from the ClinicalTrials.gov API and populate the database.")
     st.info("Data is downloaded from the API and can take up to 3 minutes to complete.")
 
-    # Check if database is empty
-    def is_db_empty():
-        try:
-            conn = get_db_connection_with_retry(retries=3, delay=0.5)
-            if conn:
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute("SELECT COUNT(*) as total FROM studies")
-                result = cursor.fetchone()
-                cursor.close()
-                conn.close()
-                return (result['total'] if result else 0) == 0
-            return True  # Assume empty if can't connect
-        except Exception as e:
-            return True  # Assume empty if can't check
-
-    db_empty = is_db_empty()
+    # Check if database is empty using DatabaseService
+    db_empty = DatabaseService.check_database_empty()
 
     if not db_empty:
         st.success("✓ Database is already populated with clinical trial data.")
@@ -463,98 +451,75 @@ if page == "Home":
 
 elif page == "Data Overview & Completeness":
     st.subheader("📋 Data Overview & Completeness")
-    conn = get_db_connection_with_retry(retries=3, delay=0.5)
-    if not conn:
-        st.error("Could not connect to the database. Please ensure MySQL is running and accessible.")
-    else:
-        # Table selector
-        st.write("Select a table to view:")
-        table_options = {
-            "Studies": "studies",
-            "Conditions": "conditions",
-            "Interventions": "interventions",
-            "Outcomes": "outcomes",
-            "Sponsors": "sponsors",
-            "Locations": "locations",
-            "Study Design": "study_design"
-        }
+    
+    # Table selector
+    st.write("Select a table to view:")
+    table_options = {
+        "Studies": "studies",
+        "Conditions": "conditions",
+        "Interventions": "interventions",
+        "Outcomes": "outcomes",
+        "Sponsors": "sponsors",
+        "Locations": "locations",
+        "Study Design": "study_design"
+    }
+    
+    selected_table_name = st.selectbox("Choose table:", list(table_options.keys()), key="overview_table")
+    selected_table = table_options[selected_table_name]
+    
+    # Validate table name for security
+    try:
+        validated_table = validator.validate_table_name(selected_table)
+    except ValueError as e:
+        st.error(f"Invalid table selection: {e}")
+        st.stop()
+    
+    # Get table data using DatabaseService
+    try:
+        # Get table count
+        row_count = DatabaseService.get_table_count(validated_table)
+        st.metric(f"Total rows in {selected_table_name}", row_count)
         
-        selected_table_name = st.selectbox("Choose table:", list(table_options.keys()), key="overview_table")
-        selected_table = table_options[selected_table_name]
+        # Display raw data
+        st.subheader(f"Raw Data - {selected_table_name}")
+        df = DatabaseService.get_table_data(validated_table, limit=config.MAX_DISPLAY_ROWS)
+        st.dataframe(df, use_container_width=True)
         
-        try:
-            cursor = conn.cursor(dictionary=True)
+        # Data Availability Report
+        st.subheader(f"📊 Data Availability Report - {selected_table_name}")
+        
+        # Get column availability statistics
+        availability_df = DatabaseService.get_column_availability(validated_table)
+        
+        if not availability_df.empty:
+            # Apply conditional coloring to the Data Availability % column
+            styled_df = availability_df.style.applymap(
+                lambda val: highlight_availability(val) if isinstance(val, str) and '%' in val else '', 
+                subset=['Data Availability %']
+            )
+            st.write(styled_df)
             
-            # Get table stats
-            cursor.execute(f"SELECT COUNT(*) as count FROM {selected_table}")
-            row_count = cursor.fetchone()['count']
+            # Summary stats
+            col_summary1, col_summary2, col_summary3 = st.columns(3)
+            avg_availability = availability_df["Data Availability %"].apply(
+                lambda x: float(x.rstrip("%"))
+            ).mean()
             
-            st.metric(f"Total rows in {selected_table_name}", row_count)
+            with col_summary1:
+                st.metric("Total Columns", len(availability_df))
+            with col_summary2:
+                st.metric("Average Data Availability", f"{avg_availability:.1f}%")
+            with col_summary3:
+                # Count columns with >95% availability
+                high_quality_cols = (availability_df["Data Availability %"].apply(
+                    lambda x: float(x.rstrip("%")) >= 95
+                )).sum()
+                st.metric("High Quality Columns (≥95%)", high_quality_cols)
+        else:
+            st.info("No availability data to display")
             
-            # Display raw data
-            st.subheader(f"Raw Data - {selected_table_name}")
-            cursor.execute(f"SELECT * FROM {selected_table} LIMIT 100")
-            df = pd.DataFrame(cursor.fetchall())
-            st.dataframe(df, use_container_width=True)
-            
-            # Data Availability Report
-            st.subheader(f"📊 Data Availability Report - {selected_table_name}")
-            
-            # Get column information
-            cursor.execute(f"DESCRIBE {selected_table}")
-            columns_info = cursor.fetchall()
-            column_names = [col['Field'] if isinstance(col, dict) else col[0] for col in columns_info]
-            
-            # Calculate data availability for each column
-            availability_data = []
-            for col in column_names:
-                try:
-                    cursor.execute(f"SELECT COUNT(*) as total, SUM(CASE WHEN `{col}` IS NULL THEN 1 ELSE 0 END) as null_count FROM {selected_table}")
-                    result = cursor.fetchone()
-                    total = result['total'] if isinstance(result, dict) else result[0]
-                    null_count = result['null_count'] if isinstance(result, dict) else result[1]
-                    null_count = null_count if null_count is not None else 0
-                    non_null = total - null_count
-                    percentage = (non_null / total * 100) if total > 0 else 0
-                    
-                    availability_data.append({
-                        "Column": col,
-                        "Total Records": total,
-                        "Non-NULL": non_null,
-                        "NULL": null_count,
-                        "Data Availability %": f"{percentage:.1f}%"
-                    })
-                except Exception as e:
-                    st.warning(f"Could not analyze column {col}: {e}")
-            
-            if availability_data:
-                availability_df = pd.DataFrame(availability_data)
-                # Apply conditional coloring to the Data Availability % column
-                styled_df = availability_df.style.applymap(lambda val: highlight_availability(val) if isinstance(val, str) and '%' in val else '', subset=['Data Availability %'])
-                st.write(styled_df)
-                
-                # Summary stats
-                col_summary1, col_summary2, col_summary3 = st.columns(3)
-                avg_availability = sum([float(x["Data Availability %"].rstrip("%")) for x in availability_data]) / len(availability_data)
-                
-                with col_summary1:
-                    st.metric("Total Columns", len(column_names))
-                with col_summary2:
-                    st.metric("Average Data Availability", f"{avg_availability:.1f}%")
-                with col_summary3:
-                    try:
-                        cursor.execute(f"SELECT COUNT(*) as complete_count FROM {selected_table} WHERE " + " AND ".join([f"`{c}` IS NOT NULL" for c in column_names]))
-                        complete_result = cursor.fetchone()
-                        complete_records = complete_result['complete_count'] if isinstance(complete_result, dict) else complete_result[0]
-                        st.metric("Complete Records", complete_records)
-                    except:
-                        st.metric("Complete Records", "N/A")
-            
-            cursor.close()
-        except Error as e:
-            st.error(f"Error fetching data: {e}")
-        finally:
-            conn.close()
+    except Exception as e:
+        ErrorHandler.handle_error(e, context="Data Overview & Completeness", show_user=True)
 
 elif page == "Distribution Analysis":
     st.subheader("📊 Data Distribution Analysis")
@@ -1516,34 +1481,29 @@ elif page == "Enrollment Success Analytics":
                 st.info("💡 **Tip:** Use the Composite Success Score as your primary metric, supplemented by individual components for detailed analysis.")
 
     st.subheader("Search Clinical Studies")
-    search_query = st.text_input("Enter a search term:")
+    search_query = st.text_input("Enter a search term:", max_chars=config.SEARCH_QUERY_MAX_LENGTH)
     
     if search_query:
-        conn = get_db_connection_with_retry(retries=3, delay=0.5)
-        if conn:
-            try:
-                cursor = conn.cursor(dictionary=True)
-                query = f"""
-                SELECT * FROM studies 
-                WHERE title LIKE %s OR description LIKE %s 
-                LIMIT 50
-                """
-                cursor.execute(query, (f"%{search_query}%", f"%{search_query}%"))
-                results = cursor.fetchall()
+        try:
+            # Validate search query
+            validated_query = validator.validate_search_query(search_query)
+            
+            if validated_query:
+                # Use DatabaseService for safe searching
+                results_df = DatabaseService.search_studies(validated_query, limit=config.MAX_SEARCH_RESULTS)
                 
-                if results:
-                    df = pd.DataFrame(results)
-                    st.dataframe(df, use_container_width=True)
+                if not results_df.empty:
+                    st.success(f"Found {len(results_df)} studies matching '{validated_query}'")
+                    st.dataframe(results_df, use_container_width=True)
                 else:
                     st.info("No studies found matching your query.")
+            else:
+                st.warning("Please enter a search term")
                 
-                cursor.close()
-            except Error as e:
-                st.error(f"Error searching studies: {e}")
-            finally:
-                conn.close()
-        else:
-            st.error("Could not connect to the database")
+        except ValueError as e:
+            st.error(f"Invalid search query: {e}")
+        except Exception as e:
+            ErrorHandler.handle_error(e, context="Search Clinical Studies", show_user=True)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("© 2026 Clinical Trial Analytics Dashboard")
